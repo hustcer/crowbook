@@ -43,6 +43,10 @@ binary = ["clap", "simplelog", "tempdir", "console", "indicatif", "textwrap"]
 nightly = ["punkt", "hyphenation"]
 odt = []
 
+# Force openssl-sys to staticly link in the openssl library. Necessary when
+# cross compiling to x86_64-unknown-linux-musl.
+vendored = ["openssl-sys/vendored"]
+
 [build-dependencies]
 crowbook-intl = "0.2"
 
@@ -75,6 +79,11 @@ simplelog = { version = "0.12", optional = true }
 url =  { version = "2", optional = true }
 syntect = { version = "5", optional = true }
 tempdir = { version = "0.3", optional = true }
+# Add openssl-sys as a direct dependency so it can be cross compiled to
+# x86_64-unknown-linux-musl using the "vendored" feature below
+openssl-sys = "*"
+
+
 
 [dependencies.reqwest]
 version = "0.11"
