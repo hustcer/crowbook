@@ -54,10 +54,15 @@ if $os in [$USE_UBUNTU, 'macos-latest'] {
 # Build for Windows
 # ----------------------------------------------------------------------------
 if $os in ['windows-latest'] {
+    choco install openssl
+    let-env OPENSSL_NO_VENDOR = 1
+    let-env OPENSSL_DIR = 'C:\Program Files\OpenSSL-Win64'
+    let-env OPENSSL_LIB_DIR = 'C:\Program Files\OpenSSL-Win64\lib'
+    let-env OPENSSL_INCLUDE_DIR = 'C:\Program Files\OpenSSL-Win64\include'
     if ($flags | str trim | is-empty) {
-        cargo build --release --all --target $target --features vendored
+        cargo build --release --target $target --features 'default vendored'
     } else {
-        cargo build --release --all --target $target --features vendored $flags
+        cargo build --release --target $target --features 'default vendored' $flags
     }
 }
 
@@ -122,9 +127,9 @@ if $os in [$USE_UBUNTU, 'macos-latest'] {
 
 def 'cargo-build-bin' [ options: string ] {
     if ($options | str trim | is-empty) {
-        cargo build --release --all --target $target --features vendored
+        cargo build --release --target $target --features 'default vendored'
     } else {
-        cargo build --release --all --target $target --features vendored $options
+        cargo build --release --target $target --features 'default vendored' $options
     }
 }
 
