@@ -54,7 +54,7 @@ if $os in [$USE_UBUNTU, 'macos-latest'] {
 # Build for Windows
 # ----------------------------------------------------------------------------
 if $os in ['windows-latest'] {
-    choco install openssl
+    choco install openssl --no-progress
     let-env OPENSSL_NO_VENDOR = 1
     let-env OPENSSL_DIR = 'C:\Program Files\OpenSSL-Win64'
     let-env OPENSSL_LIB_DIR = 'C:\Program Files\OpenSSL-Win64\lib'
