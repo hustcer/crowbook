@@ -1,10 +1,26 @@
 ChangeLog
 =========
 
-current (???)
+0.17.0 (???)
+---------------
+* Try to get rid of technical debt, including removing features that were half baked and not really useful.
+  * Remove proofread options.
+  * Remove ODT renderer.
+  * Replace mustache for templates by [upon](https://crates.io/crates/upon)
+  * Use rust-i18n for internationalization instead of hackish (and unmaintained) crowbook-intl
+
+
+0.16.1 (2023-08-04)
+-----------------------
+* Allow HTML in titles's toc where it's legal to do so in EPUB.
+* Remove some invalid characters in EPUB's XML 1.0
+
+0.16.0 (2023-07-27)
 -------------
+* `epub.titlepage.xhtml` can now be overriden (geobert)
 * Fix an issue where horizontal rules could be interpreted as additional front matter 
 * Generated PDF now include some metadata
+* Fix internal links under Windows
 
 0.15.2 (2020-07-07)
 -----------------------

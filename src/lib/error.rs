@@ -1,4 +1,4 @@
-// Copyright (C) 2016 Élisabeth HENRY.
+// Copyright (C) 2016-2023 Élisabeth HENRY.
 //
 // This file is part of Crowbook.
 //
@@ -20,6 +20,8 @@ use std::error;
 use std::fmt;
 use std::result;
 use std::string::FromUtf8Error;
+
+use rust_i18n::t;
 
 #[derive(Debug, PartialEq, Clone)]
 /// Source of an error.
@@ -70,9 +72,9 @@ impl Source {
 impl fmt::Display for Source {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         if let Some(ref file) = self.file {
-            write!(f, "{}", file)?;
+            write!(f, "{file}")?;
             if let Some(line) = self.line {
-                write!(f, ":{}", line)?;
+                write!(f, ":{line}")?;
             }
         } else {
             write!(f, "<UNKNOWN FILE>")?;
@@ -107,15 +109,6 @@ impl Error {
         }
     }
 
-    /// Creates a new grammar check error.
-    ///
-    /// Used when there is a problem connecting to languagetool
-    pub fn grammar_check<S: Into<Cow<'static, str>>, O: Into<Source>>(source: O, msg: S) -> Error {
-        Error {
-            source: source.into(),
-            inner: Inner::GrammarCheck(msg.into()),
-        }
-    }
     /// Creates a new parser error.
     ///
     /// Error when parsing markdown file.
@@ -179,7 +172,7 @@ impl Error {
 
     /// Creates a new template error.
     ///
-    /// Error when compiling a mustache template.
+    /// Error when compiling a template.
     pub fn template<S: Into<Cow<'static, str>>, O: Into<Source>>(source: O, msg: S) -> Error {
         Error {
             source: source.into(),
@@ -268,16 +261,14 @@ impl error::Error for Error {
     fn description(&self) -> &str {
         match self.inner {
             Inner::Default(ref s)
-                | Inner::Parser(ref s)
-                | Inner::Zipper(ref s)
-                | Inner::BookOption(ref s)
-                | Inner::ConfigParser(ref s)
-                | Inner::InvalidOption(ref s)
-                | Inner::Render(ref s)
-                | Inner::Template(ref s)
-                | Inner::Syntect(ref s)
-                | Inner::GrammarCheck(ref s) => s.as_ref(),
-
+            | Inner::Parser(ref s)
+            | Inner::Zipper(ref s)
+            | Inner::BookOption(ref s)
+            | Inner::ConfigParser(ref s)
+            | Inner::InvalidOption(ref s)
+            | Inner::Render(ref s)
+            | Inner::Template(ref s)
+            | Inner::Syntect(ref s) => s.as_ref(),
             Inner::FileNotFound(..) => "File not found",
         }
     }
@@ -287,39 +278,32 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let source = &self.source;
         if let Some(ref file) = source.file {
-            write!(f, "{}", file)?;
+            write!(f, "{file}")?;
             if let Some(line) = source.line {
-                write!(f, ":{}", line)?;
+                write!(f, ":{line}")?;
             }
             write!(f, ": ")?;
         }
 
         match self.inner {
-            Inner::Default(ref s) => write!(f, "{}", s),
-            Inner::GrammarCheck(ref s) => {
-                write!(
-                    f,
-                    "{}",
-                    lformat!("Error while trying to check grammar: {error}", error = s)
-                )
-            }
+            Inner::Default(ref s) => write!(f, "{s}"),
             Inner::Parser(ref s) => {
                 write!(
                     f,
                     "{}",
-                    lformat!("Error parsing markdown: {error}", error = s)
+                    t!("error.markdown", error = s)
                 )
             }
             Inner::ConfigParser(ref s) => {
-                f.write_str(&lformat!("Error parsing configuration file: "))?;
+                f.write_str(&t!("error.config"))?;
                 f.write_str(s)
             }
             Inner::FileNotFound(ref description, ref file) => {
                 write!(
                     f,
                     "{}",
-                    lformat!(
-                        "Could not find file '{file}' for {description}",
+                    t!(
+                        "error.file_not_found",
                         file = file,
                         description = description
                     )
@@ -329,27 +313,27 @@ impl fmt::Display for Error {
                 write!(
                     f,
                     "{}",
-                    lformat!("Error compiling template: {template}", template = s)
+                    t!("error.template", template = s)
                 )
             }
             Inner::Render(ref s) => {
-                f.write_str(&lformat!("Error during rendering: "))?;
+                f.write_str(&t!("error.render_error"))?;
                 f.write_str(s)
             }
             Inner::Zipper(ref s) => {
-                f.write_str(&lformat!("Error during temporary files editing: "))?;
+                f.write_str(&t!("error.zipper"))?;
                 f.write_str(s)
             }
             Inner::BookOption(ref s) => {
-                f.write_str(&lformat!("Error converting BookOption: "))?;
+                f.write_str(&t!("error.bookoption"))?;
                 f.write_str(s)
             }
             Inner::InvalidOption(ref s) => {
-                f.write_str(&lformat!("Error accessing book option: "))?;
+                f.write_str(&t!("error.invalid_option"))?;
                 f.write_str(s)
             }
             Inner::Syntect(ref s) => {
-                f.write_str(&lformat!("Error higligting syntax: "))?;
+                f.write_str(&t!("error.syntect"))?;
                 f.write_str(s)
             }
         }?;
@@ -360,28 +344,19 @@ impl fmt::Display for Error {
 /// Crowbook's Result type, used by many methods that can fail
 pub type Result<T> = result::Result<T, Error>;
 
-/// Implement our Error from mustache::Error
-impl From<mustache::Error> for Error {
-    fn from(err: mustache::Error) -> Error {
-        Error::template(Source::empty(), format!("{}", err))
+/// Implement our Error from upon::error
+impl From<upon::Error> for Error {
+    fn from(err: upon::Error) -> Error {
+        Error::template(Source::empty(), format!("{:#}", err))
     }
 }
 
-/// Implement our error from epub_maker::Error
-impl From<epub_builder::Error> for Error {
-    fn from(err: epub_builder::Error) -> Error {
-        Error::render(
-            Source::empty(),
-            lformat!("error during EPUB generation: {error}", error = err),
-        )
-    }
-}
 
 impl From<FromUtf8Error> for Error {
     fn from(err: FromUtf8Error) -> Error {
         Error::render(
             Source::empty(),
-            lformat!("UTF-8 error: {error}", error = err),
+            t!("error.utf8_error", error = err),
         )
     }
 }
@@ -390,7 +365,7 @@ impl From<std::str::Utf8Error> for Error {
     fn from(err: std::str::Utf8Error) -> Error {
         Error::render(
             Source::empty(),
-            lformat!("UTF-8 error: {error}", error = err),
+            t!("error.utf8_error", error = err),
         )
     }
 }
@@ -399,7 +374,7 @@ impl From<fmt::Error> for Error {
     fn from(err: fmt::Error) -> Error {
         Error::default(
             Source::empty(),
-            lformat!("format error: {error}", error = err),
+            t!("error.format", error = err),
         )
     }
 }
@@ -408,7 +383,9 @@ impl From<syntect::Error> for Error {
     fn from(err: syntect::Error) -> Error {
         Error::syntect(
             Source::empty(),
-            lformat!("syntect error: {error}", error = err)
+            format!("{msg}: {error}",
+                    msg = t!("error.syntect"),
+                    error = err),
         )
     }
 }
@@ -433,8 +410,6 @@ enum Inner {
     InvalidOption(Cow<'static, str>),
     /// Error when compiling template
     Template(Cow<'static, str>),
-    /// Error when connecting to LanguageTool
-    GrammarCheck(Cow<'static, str>),
     /// Error when parsing code syntax
     Syntect(Cow<'static, str>),
 }

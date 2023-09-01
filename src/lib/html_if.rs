@@ -1,4 +1,4 @@
-// Copyright (C) 2016, 2017 Élisabeth HENRY.
+// Copyright (C) 2016, 2023 Élisabeth HENRY.
 //
 // This file is part of Crowbook.
 //
@@ -15,7 +15,7 @@
 // You should have received ba copy of the GNU Lesser General Public License
 // along with Crowbook.  If not, see <http://www.gnu.org/licenses/>.
 
-use crate::book::{compile_str, Book};
+use crate::book::Book;
 use crate::book_renderer::BookRenderer;
 use crate::error::{Error, Result, Source};
 use crate::html::Highlight;
@@ -23,11 +23,11 @@ use crate::html::HtmlRenderer;
 use crate::parser::Parser;
 use crate::renderer::Renderer;
 use crate::token::Token;
-
-use rustc_serialize::base64::{self, ToBase64};
+use crate::misc;
 
 use std::convert::{AsMut, AsRef};
 use std::io;
+use rust_i18n::t;
 
 /// Interactive fiction HTML renderer
 ///
@@ -84,7 +84,7 @@ impl<'a> HtmlIfRenderer<'a> {
                 gen_code.push_str(&rendered.replace('"', "\\\"").replace('\n', "\\\n"));
                 gen_code.push('"');
                 for var in &variables {
-                    gen_code.push_str(&format!(".replace(/{{{{{var}}}}}/, {var})", var = var));
+                    gen_code.push_str(&format!(".replace(/{{{{{var}}}}}/, {var})"));
                 }
                 gen_code.push(';');
                 i = end + 2;
@@ -97,31 +97,26 @@ impl<'a> HtmlIfRenderer<'a> {
         if contains_md {
             gen_code = format!(
                 "var crowbook_return_variable = \"\";
-{}
+{gen_code}
 return crowbook_return_variable.replace(/<\\/ul><ul>/g, '');\n",
-                gen_code
             );
         }
         let container = if !contains_md { "p" } else { "div" };
         let id = self.n_fn;
         self.fn_defs.push_str(&format!(
             "function fn_{id}() {{
-    {code}
+    {gen_code}
 }}\n",
-            id = id,
-            code = gen_code
         ));
         self.curr_init.push_str(&format!(
             "    result = fn_{id}();
     if (result != undefined) {{
         document.getElementById(\"result_{id}\").innerHTML = result;
     }}\n",
-            id = id
         ));
         let content = format!(
             "<{container} id = \"result_{id}\"></{container}>\n",
             id = (self.n_fn),
-            container = container
         );
         self.n_fn += 1;
         Ok(content)
@@ -153,11 +148,9 @@ return crowbook_return_variable.replace(/<\\/ul><ul>/g, '');\n",
             {
                 let html_if: &mut HtmlIfRenderer = this.as_mut();
                 let code = format!(
-                    "if (passageCount(state.current_id) {expr}) {{
+                    "if (passageCount(state.current_id) {language}) {{
     {code};
 }}\n",
-                    code = code,
-                    expr = language
                 );
                 let content = html_if.parse_inner_code(&code)?;
                 Ok(content)
@@ -189,7 +182,7 @@ return crowbook_return_variable.replace(/<\\/ul><ul>/g, '');\n",
         for (i, chapter) in self.html.book.chapters.iter().enumerate() {
             self.html
                 .handler
-                .add_link(chapter.filename.as_str(), format!("#chapter-{}", i));
+                .add_link(chapter.filename.as_str(), format!("#chapter-{i}"));
         }
 
         let pre_code = self
@@ -247,10 +240,9 @@ return crowbook_return_variable.replace(/<\\/ul><ul>/g, '');\n",
             }
 
             chapters.push(format!(
-                "<div id = \"chapter-{}\" class = \"chapter\">
-  {}
+                "<div id = \"chapter-{i}\" class = \"chapter\">
+  {chapter_content}
 </div>",
-                i, chapter_content
             ));
             self.fn_defs.push_str(&format!(
                 "initFns.push(function () {{
@@ -267,107 +259,97 @@ return crowbook_return_variable.replace(/<\\/ul><ul>/g, '');\n",
         for chapter in &chapters {
             content.push_str(chapter);
         }
-        self.html.render_end_notes(&mut content);
+        self.html.render_end_notes(&mut content, "section", "");
 
         // Render the CSS
-        let template_css = compile_str(
-            self.html.book.get_template("html.css")?.as_ref(),
+        let template_css_src = self.html.book.get_template("html.css")?;
+        let template_css = self.html.book.compile_str(
+            template_css_src.as_ref(),
             &self.html.book.source,
             "html.css",
         )?;
         let mut data = self
             .html
             .book
-            .get_metadata(|s| self.render_vec(&Parser::new().parse_inline(s)?))?
-            .insert_str("colors", self.html.book.get_template("html.css.colors")?);
+            .get_metadata(|s| self.render_vec(&Parser::new().parse_inline(s)?))?;
+        data.insert("colors".into(), self.html.book.get_template("html.css.colors")?.into());
         if let Ok(html_css_add) = self.html.book.options.get_str("html.css.add") {
-            data = data.insert_str("additional_code", html_css_add);
+            data.insert("additional_code".into(), html_css_add.into());
         }
-        let data = data.build();
-        let mut res: Vec<u8> = vec![];
-        template_css.render_data(&mut res, &data)?;
-        let css = String::from_utf8_lossy(&res);
+        let css:String = template_css.render(&data).to_string()?;
 
         // Render the JS
-        let template_js = compile_str(
-            self.html.book.get_template("html.if.js")?.as_ref(),
+        let template_js_src = self.html.book.get_template("html.if.js")?;
+        let template_js = self.html.book.compile_str(
+            template_js_src.as_ref(),
             &self.html.book.source,
             "html.standalone.js",
         )?;
-        let data = self
+        let mut data = self
             .html
             .book
-            .get_metadata(|s| Ok(s.to_owned()))?
-            .insert_bool("one_chapter", true)
-            .insert_str("js_prelude", std::mem::take(&mut self.fn_defs))
-            .insert_str(
-                "new_game",
-                self.html.book.get_template("html.if.new_game").unwrap(),
-            )
-            .insert_str(
-                "common_script",
-                self.html.book.get_template("html.js").unwrap().as_ref(),
-            )
-            .build();
-        let mut res: Vec<u8> = vec![];
-        template_js.render_data(&mut res, &data)?;
-        let js = String::from_utf8_lossy(&res);
+            .get_metadata(|s| Ok(s.to_owned()))?;
+        data.insert("one_chapter".into(), true.into());
+        data.insert("js_prelude".into(), self.fn_defs.clone().into());
+        data.insert(
+                "new_game".into(),
+                self.html.book.get_template("html.if.new_game").unwrap().into(),
+        );
+        data.insert(
+                "common_script".into(),
+                self.html.book.get_template("html.js").unwrap().into(),
+        );
+        let js = template_js.render(&data).to_string()?;
+
 
         // Render the HTML document
-        let mut mapbuilder = self
+        let mut data = self
             .html
             .book
-            .get_metadata(|s| self.render_vec(&Parser::new().parse_inline(s)?))?
-            .insert_str("content", content)
-            .insert_str("script", js)
-            .insert_bool(self.html.book.options.get_str("lang").unwrap(), true)
-            .insert_bool("one_chapter", true)
-            .insert_str("style", css.as_ref())
-            .insert_str(
-                "print_style",
-                self.html.book.get_template("html.css.print").unwrap(),
-            )
-            .insert_str("footer", HtmlRenderer::get_footer(self)?)
-            .insert_str("header", HtmlRenderer::get_header(self)?)
-            .insert_bool("has_toc", false);
+            .get_metadata(|s| self.render_vec(&Parser::new().parse_inline(s)?))?;
+        data.insert("content".into(), content.into());
+        data.insert("script".into(), js.into());
+        data.insert(self.html.book.options.get_str("lang").unwrap().into(), true.into());
+        data.insert("one_chapter".into(), true.into());
+        data.insert("style".into(), css.into());
+        data.insert(
+                "print_style".into(),
+                self.html.book.get_template("html.css.print").unwrap().into(),
+        );
+        data.insert("footer".into(), HtmlRenderer::get_footer(self)?.into());
+        data.insert("header".into(), HtmlRenderer::get_header(self)?.into());
+        data.insert("has_toc".into(), false.into());
         if let Ok(favicon) = self.html.book.options.get_path("html.icon") {
             let favicon = self
                 .html
                 .handler
                 .map_image(&self.html.book.source, favicon)?;
-            mapbuilder = mapbuilder.insert_str(
-                "favicon",
-                format!("<link rel = \"icon\" href = \"{}\">", favicon),
+            data.insert(
+                "favicon".into(),
+                format!("<link rel = \"icon\" href = \"{favicon}\">").into(),
             );
         }
         if self.html.highlight == Highlight::Js {
-            let highlight_js = self
+            let highlight_js = misc::u8_to_base64(&self
                 .html
                 .book
                 .get_template("html.highlight.js")?
-                .as_bytes()
-                .to_base64(base64::STANDARD);
-            let highlight_js = format!("data:text/javascript;base64,{}", highlight_js);
-            mapbuilder = mapbuilder
-                .insert_bool("highlight_code", true)
-                .insert_str(
-                    "highlight_css",
-                    self.html.book.get_template("html.highlight.css")?,
-                )
-                .insert_str("highlight_js", highlight_js);
+                .as_bytes());
+            let highlight_js = format!("data:text/javascript;base64,{highlight_js}");
+            data.insert("highlight_code".into(), true.into());
+            data.insert(
+                    "highlight_css".into(),
+                    self.html.book.get_template("html.highlight.css")?.into(),
+            );
+            data.insert("highlight_js".into(), highlight_js.into());
         }
-        let data = mapbuilder.build();
-        let template = compile_str(
-            self.html
-                .book
-                .get_template("html.standalone.template")?
-                .as_ref(),
+        let template_src = self.html.book.get_template("html.standalone.template")?;
+        let template = self.html.book.compile_str(
+            template_src.as_ref(),
             &self.html.book.source,
             "html.standalone.template",
         )?;
-        let mut res = vec![];
-        template.render_data(&mut res, &data)?;
-        Ok(String::from_utf8_lossy(&res).into_owned())
+        Ok(template.render(&data).to_string()?)
     }
 }
 
@@ -377,7 +359,7 @@ pub struct HtmlIf {}
 
 impl BookRenderer for HtmlIf {
     fn auto_path(&self, book_name: &str) -> Result<String> {
-        Ok(format!("{}.html", book_name))
+        Ok(format!("{book_name}.html"))
     }
 
     fn render(&self, book: &Book, to: &mut dyn io::Write) -> Result<()> {
@@ -386,9 +368,8 @@ impl BookRenderer for HtmlIf {
         to.write_all(result.as_bytes()).map_err(|e| {
             Error::render(
                 &book.source,
-                lformat!(
-                    "problem when writing interactive fiction: {error}",
-                    error = e
+                t!("html.if_error",
+                   error = e
                 ),
             )
         })?;

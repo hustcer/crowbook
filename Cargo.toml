@@ -1,6 +1,6 @@
 [package]
 name = "crowbook"
-version = "0.16.0"
+version = "0.17.0"
 edition = "2021"
 authors = ["Elisabeth Henry <liz.henry@ouvaton.org>"]
 description = "Render a Markdown book in HTML, PDF or Epub"
@@ -11,8 +11,8 @@ keywords = ["markdown", "book"]
 categories = ["command-line-utilities", "text-processing"]
 license = "LGPL-2.1+"
 publish = true
-build = "build.rs"
 autobins = false
+rust-version = "1.58" 
 
 exclude = [
     "docs/*",
@@ -37,57 +37,32 @@ path = "src/bin/main.rs"
 doc = false
 
 [features]
-default = ["binary", "proofread", "syntect"]
-proofread = ["caribon", "reqwest", "url", "serde", "serde", "serde_json", "serde_derive"]
-binary = ["clap", "simplelog", "tempdir", "console", "indicatif", "textwrap"]
+default = ["binary", "syntect"]
+binary = ["clap", "simplelog", "tempfile", "console", "indicatif", "textwrap"]
 nightly = ["punkt", "hyphenation"]
-odt = []
-
-# Force openssl-sys to staticly link in the openssl library. Necessary when
-# cross compiling to x86_64-unknown-linux-musl.
-vendored = ["openssl-sys/vendored"]
-
-[build-dependencies]
-crowbook-intl = "0.2"
 
 [dependencies]
+rust-i18n = "2"
+html-escape = "0.2"
 mime_guess = "2"
-comrak = "0.14"
+comrak = "0.18"
 yaml-rust = "0.4"
-mustache = "0.9"
+upon = "0.7"
 uuid = { version = "1", features = ["v4"] }
 walkdir = "2"
-rustc-serialize = "0.3"
-rayon = "1.0"
-crowbook-text-processing = "1"
+base64 = "0.21"
+rayon = "1.6"
+crowbook-text-processing = "^1.1.1"
 lazy_static = "1"
-crowbook-intl-runtime = "0.1"
 numerals = "0.1"
-epub-builder = "0.5"
+epub-builder = "^0.7.1"
 log = "0.4"
 punkt = { version = "1.0", optional = true }
 hyphenation = { version = "0.8", optional = true, features = ["embed_all"] }
-textwrap = { version = "0.15", optional = true }
-serde = { version = "1", optional = true }
-serde_json = { version = "1", optional = true }
-serde_derive = { version = "1", optional = true }
-indicatif = { version = "0.16", optional = true }
+textwrap = { version = "0.16", optional = true }
+indicatif = { version = "0.17", optional = true }
 console = { version = "0.15", optional = true }
-caribon = { version = "0.8", optional = true }
-clap = { version = "3", optional = true }
+clap = { version = "4", optional = true }
 simplelog = { version = "0.12", optional = true }
-url =  { version = "2", optional = true }
 syntect = { version = "5", optional = true }
-tempdir = { version = "0.3", optional = true }
-# Add openssl-sys as a direct dependency so it can be cross compiled to
-# x86_64-unknown-linux-musl using the "vendored" feature below
-openssl-sys = "*"
-
-
-
-[dependencies.reqwest]
-version = "0.11"
-optional = true
-features = ["blocking"]
-
-
+tempfile = { version = "3", optional = true }

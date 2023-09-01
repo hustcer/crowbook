@@ -1,4 +1,4 @@
-// Copyright (C) 2016, 2017, 2018 Élisabeth HENRY.
+// Copyright (C) 2016-2023 Élisabeth HENRY.
 //
 // This file is part of Crowbook.
 //
@@ -22,15 +22,13 @@ use crate::chapter::Chapter;
 use crate::cleaner::{Cleaner, CleanerParams, Default, French, Off};
 use crate::epub::Epub;
 use crate::error::{Error, Result, Source};
-use crate::html_dir::{HtmlDir, ProofHtmlDir};
+use crate::html_dir::HtmlDir;
 use crate::html_if::HtmlIf;
-use crate::html_single::{HtmlSingle, ProofHtmlSingle};
+use crate::html_single::HtmlSingle;
 use crate::lang;
-use crate::latex::{Latex, Pdf, ProofLatex, ProofPdf};
+use crate::latex::{Latex, Pdf};
 use crate::misc;
 use crate::number::Number;
-#[cfg(feature = "odt")]
-use crate::odt::Odt;
 use crate::parser::Features;
 use crate::parser::Parser;
 use crate::resource_handler::ResourceHandler;
@@ -38,53 +36,19 @@ use crate::templates::{epub, epub3, highlight, html, html_dir, html_if, html_sin
 use crate::text_view::view_as_text;
 use crate::token::Token;
 
-#[cfg(feature = "proofread")]
-use crate::grammalecte::GrammalecteChecker;
-#[cfg(feature = "proofread")]
-use crate::grammar_check::GrammarChecker;
-#[cfg(feature = "proofread")]
-use crate::repetition_check::RepetitionDetector;
-// Dummy grammarchecker thas does nothing to let the compiler compile
-#[cfg(not(feature = "proofread"))]
-struct GrammarChecker {}
-#[cfg(not(feature = "proofread"))]
-impl GrammarChecker {
-    fn check_chapter(&self, _: &[Token]) -> Result<()> {
-        Ok(())
-    }
-}
-// Dummy grammalectechecker thas does nothing to let the compiler compile
-#[cfg(not(feature = "proofread"))]
-struct GrammalecteChecker {}
-#[cfg(not(feature = "proofread"))]
-impl GrammalecteChecker {
-    fn check_chapter(&self, _: &[Token]) -> Result<()> {
-        Ok(())
-    }
-}
-// Dummy RepetitionDetector thas does nothing to let the compiler compile
-#[cfg(not(feature = "proofread"))]
-struct RepetitionDetector {}
-#[cfg(not(feature = "proofread"))]
-impl RepetitionDetector {
-    fn check_chapter(&self, _: &[Token]) -> Result<()> {
-        Ok(())
-    }
-}
-
 use std::borrow::Cow;
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, BTreeMap};
 use std::fmt;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::iter::IntoIterator;
 use std::path::{Path, PathBuf};
 
-use mustache::{MapBuilder, Template};
 use numerals::roman::Roman;
 use rayon::prelude::*;
 use yaml_rust::{Yaml, YamlLoader};
+use rust_i18n::t;
 
 /// Type of header (part or chapter)
 #[derive(Copy, Clone, Debug)]
@@ -156,7 +120,7 @@ impl fmt::Display for HeaderData {
 /// // Render the book as html to stdout
 /// book.render_format_to("html", &mut std::io::stdout()).unwrap();
 /// ```
-pub struct Book {
+pub struct Book<'a> {
     /// Internal structure. You should not accesss this directly except if
     /// you are writing a new renderer.
     pub chapters: Vec<Chapter>,
@@ -177,75 +141,52 @@ pub struct Book {
     pub features: Features,
 
     cleaner: Box<dyn Cleaner>,
-    chapter_template: Option<Template>,
-    part_template: Option<Template>,
-    checker: Option<GrammarChecker>,
-    grammalecte: Option<GrammalecteChecker>,
-    detector: Option<RepetitionDetector>,
     formats: HashMap<&'static str, (String, Box<dyn BookRenderer>)>,
 
     #[doc(hidden)]
     pub bars: Bars,
+
+    /// Store the templates registry
+    pub registry: upon::Engine<'a>,
 }
 
-impl Book {
+impl<'a> Book<'a> {
     /// Creates a new, empty `Book`
-    pub fn new() -> Book {
+    pub fn new() -> Book<'a> {
         let mut book = Book {
             source: Source::empty(),
             chapters: vec![],
             cleaner: Box::new(Off),
             root: PathBuf::new(),
             options: BookOptions::new(),
-            chapter_template: None,
-            part_template: None,
-            checker: None,
-            grammalecte: None,
-            detector: None,
             formats: HashMap::new(),
             features: Features::new(),
             bars: Bars::new(),
+            registry: upon::Engine::new(),
         };
+
+        // Add some filters to registry that are useful for some templates
+        book.registry.add_filter("eq", str::eq);
+        book.registry.add_filter("starts", |a: &str, b: &str| a.starts_with(b));
+
         book.add_format(
             "html",
-            lformat!("HTML (standalone page)"),
+            t!("format.html_single"),
             Box::new(HtmlSingle {}),
         )
         .add_format(
-            "proofread.html",
-            lformat!("HTML (standalone page/proofreading)"),
-            Box::new(ProofHtmlSingle {}),
-        )
-        .add_format(
             "html.dir",
-            lformat!("HTML (multiple pages)"),
+            t!("format.html_dir"),
             Box::new(HtmlDir {}),
         )
-        .add_format(
-            "proofread.html.dir",
-            lformat!("HTML (multiple pages/proofreading)"),
-            Box::new(ProofHtmlDir {}),
-        )
-        .add_format("tex", lformat!("LaTeX"), Box::new(Latex {}))
-        .add_format(
-            "proofread.tex",
-            lformat!("LaTeX (proofreading)"),
-            Box::new(ProofLatex {}),
-        )
-        .add_format("pdf", lformat!("PDF"), Box::new(Pdf {}))
-        .add_format(
-            "proofread.pdf",
-            lformat!("PDF (proofreading)"),
-            Box::new(ProofPdf {}),
-        )
-        .add_format("epub", lformat!("EPUB"), Box::new(Epub {}))
+        .add_format("tex", t!("format.tex"), Box::new(Latex {}))
+        .add_format("pdf", t!("format.pdf"), Box::new(Pdf {}))
+        .add_format("epub", t!("format.epub"), Box::new(Epub {}))
         .add_format(
             "html.if",
-            lformat!("HTML (interactive fiction)"),
+            t!("html_if"),
             Box::new(HtmlIf {}),
         );
-        #[cfg(feature = "odt")]
-        book.add_format("odt", lformat!("ODT"), Box::new(Odt {}));
         book
     }
 
@@ -307,17 +248,17 @@ impl Book {
     /// assert_eq!(book.options.get_str("author").unwrap(), "Foo");
     /// assert_eq!(book.options.get_str("title").unwrap(), "Bar");
     /// ```
-    pub fn set_options<'a, I>(&mut self, options: I) -> &mut Book
+    pub fn set_options<'b, I>(&mut self, options: I) -> &mut Self
     where
-        I: IntoIterator<Item = &'a (&'a str, &'a str)>,
+        I: IntoIterator<Item = &'b (&'b str, &'b str)>,
     {
         // set options
-        for &(key, value) in options {
+        for (key, value) in options {
             if let Err(err) = self.options.set(key, value) {
                 error!(
                     "{}",
-                    lformat!(
-                        "Error initializing book: could not set {key} to {value}: {error}",
+                    t!(
+                        "error.book_init",
                         key = key,
                         value = value,
                         error = err
@@ -344,13 +285,13 @@ impl Book {
     /// let mut book = Book::new();
     /// let result = book.load_file("some.book");
     /// ```
-    pub fn load_file<P: AsRef<Path>>(&mut self, path: P) -> Result<&mut Book> {
+    pub fn load_file<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
         let filename = format!("{}", path.as_ref().display());
         self.source = Source::new(filename.as_str());
         self.options.source = Source::new(filename.as_str());
 
         let f = File::open(path.as_ref()).map_err(|_| {
-            Error::file_not_found(Source::empty(), lformat!("book"), filename.clone())
+            Error::file_not_found(Source::empty(), t!("format.book"), filename.clone())
         })?;
         // Set book path to book's directory
         if let Some(parent) = path.as_ref().parent() {
@@ -358,18 +299,14 @@ impl Book {
             self.options.root = self.root.clone();
         }
 
-        let result = self.read_config(&f);
-        match result {
-            Ok(book) => Ok(book),
+        match self.read_config(&f) {
+            Ok(_) => Ok(()),
             Err(err) => {
                 if err.is_config_parser() && path.as_ref().ends_with(".md") {
                     let err = Error::default(
                         Source::empty(),
-                        lformat!(
-                            "could not parse {file} as a book \
-                                                       file.\nMaybe you meant to run crowbook \
-                                                       with the --single argument?",
-                            file = misc::normalize(path)
+                        t!("error.parse_book",
+                           file = misc::normalize(path)
                         ),
                     );
                     Err(err)
@@ -395,7 +332,7 @@ impl Book {
     /// let mut book = Book::new();
     /// book.load_markdown_file("foo.md"); // not unwraping since foo.md doesn't exist
     /// ```
-    pub fn load_markdown_file<P: AsRef<Path>>(&mut self, path: P) -> Result<&mut Self> {
+    pub fn load_markdown_file<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
         let filename = format!("{}", path.as_ref().display());
         self.source = Source::new(filename.as_str());
 
@@ -414,7 +351,7 @@ impl Book {
         // Update grammar checker according to options
         self.add_chapter(Number::Hidden, &relative_path.to_string_lossy(), false)?;
 
-        Ok(self)
+        Ok(())
     }
 
     /// Reads a single markdown config from a `Read`able object.
@@ -439,24 +376,24 @@ impl Book {
     /// book.read_markdown_config(content.as_bytes()).unwrap();
     /// assert_eq!(book.options.get_str("title").unwrap(), "Bar");
     /// ```
-    pub fn read_markdown_config<R: Read>(&mut self, source: R) -> Result<&mut Self> {
+    pub fn read_markdown_config<R: Read>(&mut self, source: R) -> Result<()> {
         self.options.set("tex.class", "article").unwrap();
         self.options.set("input.yaml_blocks", "true").unwrap();
 
         // Update grammar checker according to options
         self.add_chapter_from_source(Number::Hidden, source, false)?;
 
-        Ok(self)
+        Ok(())
     }
 
     /// Sets options from a YAML block
-    fn set_options_from_yaml(&mut self, yaml: &str) -> Result<&mut Book> {
+    fn set_options_from_yaml(&mut self, yaml: &str) -> Result<&mut Self> {
         self.options.source = self.source.clone();
         match YamlLoader::load_from_str(yaml) {
             Err(err) => {
                 return Err(Error::config_parser(
                     &self.source,
-                    lformat!("YAML block was not valid YAML: {error}", error = err),
+                    t!("error.yaml_block", error = err),
                 ))
             }
             Ok(mut docs) => {
@@ -473,10 +410,7 @@ impl Book {
                 } else {
                     return Err(Error::config_parser(
                         &self.source,
-                        lformat!(
-                            "YAML part of the book is not a \
-                                                              valid hashmap"
-                        ),
+                        t!("error.parse_book"),
                     ));
                 }
             }
@@ -513,33 +447,30 @@ impl Book {
     /// let mut book = Book::new();
     /// book.read_config(content.as_bytes()); // no unwraping as `intro.md` and `chapter_01.md` don't exist
     /// ```
-    pub fn read_config<R: Read>(&mut self, mut source: R) -> Result<&mut Book> {
-        fn get_filename<'a>(source: &Source, s: &'a str) -> Result<&'a str> {
-            let words: Vec<&str> = (&s[1..]).split_whitespace().collect();
+    pub fn read_config<R: Read>(&mut self, mut source: R) -> Result<()> {
+        fn get_filename<'b>(source: &Source, s: &'b str) -> Result<&'b str> {
+            let words: Vec<&str> = (s[1..]).split_whitespace().collect();
             if words.len() > 1 {
                 return Err(Error::config_parser(
                     source,
-                    lformat!(
-                        "chapter filenames must not contain \
-                                                          whitespace"
-                    ),
+                    t!("error.chapter_whitespace"),
                 ));
             } else if words.is_empty() {
                 return Err(Error::config_parser(
                     source,
-                    lformat!("no chapter name specified"),
+                    t!("error.no_chapter_name"),
                 ));
             }
             Ok(words[0])
         }
 
-        self.bar_set_message(Crowbar::Main, &lformat!("setting options"));
+        self.bar_set_message(Crowbar::Main, &t!("ui.options"));
 
         let mut s = String::new();
         source.read_to_string(&mut s).map_err(|err| {
             Error::config_parser(
                 Source::empty(),
-                lformat!("could not read source: {error}", error = err),
+                t!("error.source", error = err),
             )
         })?;
 
@@ -551,17 +482,14 @@ impl Book {
         let mut line_number = 0;
         let mut is_next_line_ok: bool;
 
-        loop {
-            if let Some(next_line) = lines.peek() {
-                if next_line.starts_with(|c| match c {
-                    '-' | '+' | '!' | '@' => true,
-                    _ => c.is_digit(10),
-                }) {
-                    break;
-                }
-            } else {
+        while let Some(next_line) = lines.peek() {
+            if next_line.starts_with(|c| match c {
+                '-' | '+' | '!' | '@' => true,
+                _ => c.is_ascii_digit(),
+            }) {
                 break;
             }
+
             line = lines.next().unwrap();
             line_number += 1;
             self.source.set_line(line_number);
@@ -578,15 +506,14 @@ impl Book {
 
             if let Some(next_line) = lines.peek() {
                 let doc = YamlLoader::load_from_str(next_line);
-                if doc.is_err() {
-                    is_next_line_ok = false;
-                } else {
-                    let doc = doc.unwrap();
+                if let Ok(doc) = doc {
                     if !doc.is_empty() && doc[0].as_hash().is_some() {
                         is_next_line_ok = true;
                     } else {
                         is_next_line_ok = false;
                     }
+                } else {
+                    is_next_line_ok = false;
                 }
             } else {
                 break;
@@ -617,14 +544,11 @@ impl Book {
         // Update cleaner according to options (autoclean/lang)
         self.update_cleaner();
 
-        // Update grammar checker according to options (proofread.*)
-        self.init_checker();
-
-        self.bar_set_message(Crowbar::Main, &lformat!("Parsing chapters"));
+        self.bar_set_message(Crowbar::Main, &t!("ui.chapters"));
 
         // Parse chapters
         let lines: Vec<_> = lines.collect();
-        self.add_second_bar(&lformat!("Processing..."), lines.len() as u64);
+        self.add_second_bar(&t!("ui.processing"), lines.len() as u64);
         for line in lines {
             self.inc_second_bar();
             line_number += 1;
@@ -659,7 +583,7 @@ impl Book {
                 // hidden chapter
                 let file = get_filename(&self.source, line)?;
                 self.add_chapter(Number::Hidden, file, false)?;
-            } else if line.starts_with(|c: char| c.is_digit(10)) {
+            } else if line.starts_with(|c: char| c.is_ascii_digit()) {
                 // chapter with specific number
                 let parts: Vec<_> = line
                     .splitn(2, |c: char| c == '.' || c == ':' || c == '+')
@@ -667,23 +591,19 @@ impl Book {
                 if parts.len() != 2 {
                     return Err(Error::config_parser(
                         &self.source,
-                        lformat!(
-                            "ill-formatted line specifying \
-                                                              chapter number"
-                        ),
+                        t!("error.format_line"),
                     ));
                 }
                 let file = get_filename(&self.source, parts[1])?;
                 let number = parts[0].parse::<i32>().map_err(|err| {
                     Error::config_parser(
                         &self.source,
-                        lformat!("error parsing chapter number: {error}", error = err),
+                        t!("error.chapter_number", error = err),
                     )
                 })?;
                 self.add_chapter(Number::Specified(number), file, true)?;
-            } else if line.starts_with('@') {
+            } else if let Some(subline) = line.strip_prefix('@') {
                 /* Part */
-                let subline = &line[1..];
                 if subline.starts_with(|c: char| c.is_whitespace()) {
                     let subline = subline.trim();
                     let ast = Parser::from(self).parse_inline(subline)?;
@@ -698,7 +618,7 @@ impl Book {
                     /* Numbered part */
                     let file = get_filename(&self.source, subline)?;
                     self.add_chapter(Number::DefaultPart, file, true)?;
-                } else if subline.starts_with(|c: char| c.is_digit(10)) {
+                } else if subline.starts_with(|c: char| c.is_ascii_digit()) {
                     /* Specified  part*/
                     let parts: Vec<_> = subline
                         .splitn(2, |c: char| c == '.' || c == ':' || c == '+')
@@ -706,33 +626,27 @@ impl Book {
                     if parts.len() != 2 {
                         return Err(Error::config_parser(
                             &self.source,
-                            lformat!(
-                                "ill-formatted line specifying \
-                                                                  part number"
-                            ),
+                            t!("error.part_number_line")
                         ));
                     }
                     let file = get_filename(&self.source, parts[1])?;
                     let number = parts[0].parse::<i32>().map_err(|err| {
                         Error::config_parser(
                             &self.source,
-                            lformat!("error parsing part number: {error}", error = err),
+                            t!("error.part_number", error = err),
                         )
                     })?;
                     self.add_chapter(Number::SpecifiedPart(number), file, true)?;
                 } else {
                     return Err(Error::config_parser(
                         &self.source,
-                        lformat!("found invalid part definition in the chapter list"),
+                        t!("error.part_definition"),
                     ));
                 }
             } else {
                 return Err(Error::config_parser(
                     &self.source,
-                    lformat!(
-                        "found invalid chapter definition in \
-                                                          the chapter list"
-                    ),
+                    t!("error.chapter_definition"),
                 ));
             }
         }
@@ -741,73 +655,9 @@ impl Book {
 
         self.source.unset_line();
         self.set_chapter_template()?;
-        Ok(self)
+        Ok(())
     }
 
-    /// Determine whether proofreading is activated or not
-    fn is_proofread(&self) -> bool {
-        self.options.get_bool("proofread").unwrap()
-            && (self.options.get("output.proofread.html").is_ok()
-                || self.options.get("output.proofread.html.dir").is_ok()
-                || self.options.get("output.proofread.pdf").is_ok())
-    }
-
-    /// Initialize the grammar checker and repetetion detector if they needs to be
-    #[cfg(feature = "proofread")]
-    fn init_checker(&mut self) {
-        if self.is_proofread() {
-            if self.options.get_bool("proofread.languagetool").unwrap() {
-                let port = self.options.get_i32("proofread.languagetool.port").unwrap() as usize;
-                let lang = self.options.get_str("lang").unwrap();
-                let checker = GrammarChecker::new(port, lang);
-                match checker {
-                    Ok(checker) => self.checker = Some(checker),
-                    Err(e) => {
-                        error!(
-                            "{}",
-                            lformat!("{error}. Proceeding without using languagetool.", error = e)
-                        )
-                    }
-                }
-            }
-            if self.options.get_bool("proofread.grammalecte").unwrap() {
-                let port = self.options.get_i32("proofread.grammalecte.port").unwrap() as usize;
-                let lang = self.options.get_str("lang").unwrap();
-                let checker = GrammalecteChecker::new(port, lang);
-                match checker {
-                    Ok(checker) => self.grammalecte = Some(checker),
-                    Err(e) => {
-                        error!(
-                            "{}",
-                            lformat!("{error}. Proceeding without using grammalecte.", error = e)
-                        )
-                    }
-                }
-            }
-            if self.options.get_bool("proofread.repetitions").unwrap() {
-                self.detector = Some(RepetitionDetector::new(self));
-            }
-        }
-    }
-
-    #[cfg(not(feature = "proofread"))]
-    fn init_checker(&mut self) {}
-
-    /// Renders the book to the given format if output.{format} is set;
-    /// do nothing otherwise.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use crowbook::Book;
-    /// let mut book = Book::new();
-    /// /* Will do nothing as book is empty and has no output format specified */
-    /// book.render_format("pdf");
-    /// ```
-    pub fn render_format(&self, format: &str) {
-        // TODO: check that it doesn't break everything, or use option?
-        self.render_format_with_bar(format, 0)
-    }
 
     /// Generates output files acccording to book options.
     ///
@@ -835,10 +685,7 @@ impl Book {
             .formats
             .keys()
             .filter(|fmt| {
-                if !self.is_proofread() && fmt.contains("proofread") {
-                    return false;
-                }
-                self.options.get_path(&format!("output.{}", fmt)).is_ok()
+                self.options.get_path(&format!("output.{fmt}")).is_ok()
             })
             .map(|s| s.to_string())
             .collect();
@@ -861,7 +708,7 @@ impl Book {
             self.render_format_with_bar(fmt, i);
         });
 
-        self.bar_finish(Crowbar::Main, CrowbarState::Success, &lformat!("Finished"));
+        self.bar_finish(Crowbar::Main, CrowbarState::Success, &t!("ui.finished"));
 
         // if handles.is_empty() {
         //     Logger::display_warning(lformat!("Crowbook generated no file because no output file was \
@@ -874,18 +721,17 @@ impl Book {
         let mut key = String::from("output.");
         key.push_str(format);
         if let Ok(path) = self.options.get_path(&key) {
-            self.bar_set_message(Crowbar::Spinner(bar), &lformat!("rendering..."));
+            self.bar_set_message(Crowbar::Spinner(bar), &t!("ui.rendering_format"));
             let result = self.render_format_to_file_with_bar(format, path, bar);
             if let Err(err) = result {
                 self.bar_finish(
                     Crowbar::Spinner(bar),
                     CrowbarState::Error,
-                    &format!("{}", err),
+                    &format!("{err}"),
                 );
                 error!(
                     "{}",
-                    lformat!(
-                        "Error rendering {name}: {error}",
+                    t!("error.rendering",
                         name = format,
                         error = err
                     )
@@ -902,11 +748,11 @@ impl Book {
     ) -> Result<()> {
         debug!(
             "{}",
-            lformat!("Attempting to generate {format}...", format = format)
+            t!("msg.attempting", format = format)
         );
         let path = path.into();
         match self.formats.get(format) {
-            Some(&(ref description, ref renderer)) => {
+            Some((description, renderer)) => {
                 let path = if path.ends_with("auto") {
                     let file = if let Some(s) = self
                         .source
@@ -916,14 +762,13 @@ impl Book {
                     {
                         s.to_string_lossy().into_owned()
                     } else {
-                        return Err(Error::default(&self.source, lformat!("output to {format} set to auto but can't find book file name to infer it",
+                        return Err(Error::default(&self.source, t!("error.infer",
                                                                      format = description)));
                     };
                     let file = renderer.auto_path(&file).map_err(|_| {
                         Error::default(
                             &self.source,
-                            lformat!(
-                                "the {format} renderer does not support auto for output path",
+                            t!("error.support",
                                 format = description
                             ),
                         )
@@ -934,8 +779,8 @@ impl Book {
                 };
                 renderer.render_to_file(self, &path)?;
                 let path = misc::normalize(path);
-                let msg = lformat!(
-                    "Succesfully generated {format}: {path}",
+                let msg = t!(
+                    "msg.generated",
                     format = description,
                     path = &path
                 );
@@ -943,13 +788,13 @@ impl Book {
                 self.bar_finish(
                     Crowbar::Spinner(bar),
                     CrowbarState::Success,
-                    &lformat!("generated {path}", path = path),
+                    &t!("ui.generated", path = path),
                 );
                 Ok(())
             }
             None => Err(Error::default(
                 Source::empty(),
-                lformat!("unknown format {format}", format = format),
+                t!("error.unknown", format = format),
             )),
         }
     }
@@ -968,21 +813,21 @@ impl Book {
     pub fn render_format_to<T: Write>(&mut self, format: &str, f: &mut T) -> Result<()> {
         debug!(
             "{}",
-            lformat!("Attempting to generate {format}...", format = format)
+            t!("msg.attempting", format = format)
         );
         let bar = self.add_spinner_to_multibar(format);
         match self.formats.get(format) {
-            Some(&(ref description, ref renderer)) => match renderer.render(self, f) {
+            Some((description, renderer)) => match renderer.render(self, f) {
                 Ok(_) => {
                     self.bar_finish(
                         Crowbar::Spinner(bar),
                         CrowbarState::Success,
-                        &lformat!("generated {format}", format = format),
+                        &t!("ui.generated", path = format),
                     );
-                    self.bar_finish(Crowbar::Main, CrowbarState::Success, &lformat!("Finished"));
+                    self.bar_finish(Crowbar::Main, CrowbarState::Success, &t!("ui.finished"));
                     info!(
                         "{}",
-                        lformat!("Succesfully generated {format}", format = description)
+                        t!("msg.generated_short", format = description)
                     );
                     Ok(())
                 }
@@ -990,9 +835,9 @@ impl Book {
                     self.bar_finish(
                         Crowbar::Spinner(bar),
                         CrowbarState::Error,
-                        &lformat!("{error}", error = e),
+                        &format!("{error}", error = e),
                     );
-                    self.bar_finish(Crowbar::Main, CrowbarState::Error, &lformat!("ERROR"));
+                    self.bar_finish(Crowbar::Main, CrowbarState::Error, &t!("ui.error"));
                     Err(e)
                 }
             },
@@ -1000,11 +845,11 @@ impl Book {
                 self.bar_finish(
                     Crowbar::Spinner(bar),
                     CrowbarState::Error,
-                    &lformat!("unknown format"),
+                    &t!("error.unknown_short"),
                 );
                 Err(Error::default(
                     Source::empty(),
-                    lformat!("unknown format {format}", format = format),
+                    t!("error.unknown", format = format),
                 ))
             }
         }
@@ -1029,15 +874,8 @@ impl Book {
 
     pub fn render_format_to_file<P: Into<PathBuf>>(&mut self, format: &str, path: P) -> Result<()> {
         let bar = self.add_spinner_to_multibar(format);
-        let path = path.into();
-        let normalized = misc::normalize(&path);
         self.render_format_to_file_with_bar(format, path, bar)?;
-        self.bar_finish(
-            Crowbar::Spinner(bar),
-            CrowbarState::Success,
-            &lformat!("generated {path}", path = normalized),
-        );
-        self.bar_finish(Crowbar::Main, CrowbarState::Success, &lformat!("Finished"));
+        self.bar_finish(Crowbar::Main, CrowbarState::Success, &t!("ui.finished"));
         Ok(())
     }
 
@@ -1053,28 +891,27 @@ impl Book {
     ) -> Result<&mut Self> {
         self.bar_set_message(
             Crowbar::Main,
-            &lformat!("Processing {file}...", file = file),
+            &t!("ui.processing_file", file = file),
         );
         let mut content = String::new();
         source.read_to_string(&mut content).map_err(|_| {
             Error::parser(
                 &self.source,
-                lformat!(
-                    "file {file} contains invalid UTF-8",
+                t!(
+                    "error.utf8",
                     file = misc::normalize(file)
                 ),
             )
         })?;
 
-
         // parse the file
-        self.bar_set_message(Crowbar::Second, &lformat!("Parsing..."));
+        self.bar_set_message(Crowbar::Second, &t!("ui.parsing..."));
 
         let mut parser = Parser::from(self);
         parser.set_source_file(file);
         let mut yaml_block = String::from("");
         let mut tokens = parser.parse(&content, Option::Some(&mut yaml_block))?;
-        
+
         // Parse YAML block
         self.parse_yaml(&yaml_block);
         self.features = self.features | parser.features();
@@ -1088,9 +925,8 @@ impl Book {
         if offset.starts_with("..") {
             debug!(
                 "{}",
-                lformat!(
-                    "Warning: book contains chapter '{file}' in a directory above \
-                                   the book file, this might cause problems",
+                t!(
+                    "warn.above",
                     file = misc::normalize(file)
                 )
             );
@@ -1128,76 +964,6 @@ impl Book {
             misc::insert_title(&mut tokens);
         }
 
-        // If one of the renderers requires it, perform grammarcheck
-        if cfg!(feature = "proofread") && self.is_proofread() {
-            let normalized = misc::normalize(file);
-            if let Some(ref checker) = self.checker {
-                self.bar_set_message(Crowbar::Second, &lformat!("Running languagetool"));
-
-                info!(
-                    "{}",
-                    lformat!(
-                        "Trying to run languagetool on {file}, this might take a \
-                                    while...",
-                        file = &normalized
-                    )
-                );
-                if let Err(err) = checker.check_chapter(&mut tokens) {
-                    error!(
-                        "{}",
-                        lformat!(
-                            "Error running languagetool on {file}: {error}",
-                            file = &normalized,
-                            error = err
-                        )
-                    );
-                }
-            }
-            if let Some(ref checker) = self.grammalecte {
-                self.bar_set_message(Crowbar::Second, &lformat!("Running grammalecte"));
-
-                info!(
-                    "{}",
-                    lformat!(
-                        "Trying to run grammalecte on {file}, this might take a \
-                                    while...",
-                        file = &normalized
-                    )
-                );
-                if let Err(err) = checker.check_chapter(&mut tokens) {
-                    error!(
-                        "{}",
-                        lformat!(
-                            "Error running grammalecte on {file}: {error}",
-                            file = &normalized,
-                            error = err
-                        )
-                    );
-                }
-            }
-            if let Some(ref detector) = self.detector {
-                self.bar_set_message(Crowbar::Second, &lformat!("Detecting repetitions"));
-
-                info!(
-                    "{}",
-                    lformat!(
-                        "Trying to run repetition detector on {file}, this might take a \
-                                      while...",
-                        file = &normalized
-                    )
-                );
-                if let Err(err) = detector.check_chapter(&mut tokens) {
-                    error!(
-                        "{}",
-                        lformat!(
-                            "Error running repetition detector on {file}: {error}",
-                            file = &normalized,
-                            error = err
-                        )
-                    );
-                }
-            }
-        }
         self.bar_set_message(Crowbar::Second, "");
 
         self.chapters.push(Chapter::new(number, file, tokens));
@@ -1220,16 +986,13 @@ impl Book {
         {
             let last = self.chapters.last_mut().unwrap();
             for token in &mut last.content {
-                match *token {
-                    Token::Header(ref mut n, _) => {
-                        let new = *n + level;
-                        if !(0..=6).contains(&new) {
-                            return Err(Error::parser(Source::new(file),
-                                                     lformat!("this subchapter contains a heading that, when adjusted, is not in the right range ({} instead of [0-6])", new)));
-                        }
-                        *n = new;
+                if let Token::Header(ref mut n, _) = *token {
+                    let new = *n + level;
+                    if !(0..=6).contains(&new) {
+                        return Err(Error::parser(Source::new(file),
+                                                     t!("error.heading", n = new)));
                     }
-                    _ => {}
+                    *n = new;
                 }
             }
         }
@@ -1257,11 +1020,7 @@ impl Book {
     ) -> Result<&mut Self> {
         self.bar_set_message(
             Crowbar::Main,
-            &lformat!("Parsing {file}", file = misc::normalize(file)),
-        );
-        debug!(
-            "{}",
-            lformat!("Parsing chapter: {file}...", file = misc::normalize(file))
+            &t!("ui.parsing_file", file = misc::normalize(file)),
         );
 
         // try to open file
@@ -1269,7 +1028,7 @@ impl Book {
         let f = File::open(&path).map_err(|_| {
             Error::file_not_found(
                 &self.source,
-                lformat!("book chapter"),
+                t!("format.book_chapter"),
                 format!("{}", path.display()),
             )
         })?;
@@ -1312,10 +1071,18 @@ impl Book {
     #[doc(hidden)]
     pub fn get_template(&self, template: &str) -> Result<Cow<'static, str>> {
         let option = self.options.get_path(template);
+        let epub3 = template.starts_with("epub") && self.options.get_i32("epub.version")? == 3;
         let fallback = match template {
             "epub.css" => epub::CSS,
+            "epub.titlepage.xhtml" => {
+                if epub3 {
+                    epub3::TITLE
+                } else {
+                    epub::TITLE
+                }
+            }
             "epub.chapter.xhtml" => {
-                if self.options.get_i32("epub.version")? == 3 {
+                if epub3 {
                     epub3::TEMPLATE
                 } else {
                     epub::TEMPLATE
@@ -1336,23 +1103,19 @@ impl Book {
             _ => {
                 return Err(Error::config_parser(
                     &self.source,
-                    lformat!("invalid template '{template}'", template = template),
+                    t!("error.invalid_template"),
                 ))
             }
         };
         if let Ok(ref s) = option {
             let mut f = File::open(s).map_err(|_| {
-                Error::file_not_found(
-                    &self.source,
-                    format!("template '{template}'", template = template),
-                    s.to_owned(),
-                )
+                Error::file_not_found(&self.source, format!("template '{template}'"), s.to_owned())
             })?;
             let mut res = String::new();
             f.read_to_string(&mut res).map_err(|_| {
                 Error::config_parser(
                     &self.source,
-                    lformat!("file '{file}' could not be read", file = s),
+                    t!("error.read_file", file = s),
                 )
             })?;
             Ok(Cow::Owned(res))
@@ -1361,14 +1124,25 @@ impl Book {
         }
     }
 
-    /// Sets the chapter_template once and for all
+    /// Sets the chapter_template once and for all (also sets part template)
     fn set_chapter_template(&mut self) -> Result<()> {
-        let template = compile_str(
-            self.options.get_str("rendering.chapter.template").unwrap(),
-            &self.source,
-            "rendering.chapter.template",
-        )?;
-        self.chapter_template = Some(template);
+        self.register_template("rendering.chapter.template")?;
+        self.register_template("rendering.part.template")?;
+        Ok(())
+    }
+
+    
+    fn register_template(&mut self, tpl: &'static str) -> Result<()> {
+        self.registry.add_template(tpl,
+            self.options.get_str(tpl).unwrap().to_owned())
+            .map_err(|e| Error::template(
+                &self.source,
+                t!(
+                    "error.compile_template",
+                    template = "tpl",
+                    error = e
+                ))
+            )?;
         Ok(())
     }
 
@@ -1389,15 +1163,15 @@ impl Book {
             if n <= 0 {
                 return Err(Error::render(
                     Source::empty(),
-                    lformat!(
-                        "can not use roman numerals with zero or negative chapter numbers ({n})",
+                    t!(
+                        "error.roman_numerals",
                         n = n
                     ),
                 ));
             }
             format!("{:X}", Roman::from(n as i16))
         } else {
-            format!("{}", n)
+            format!("{n}")
         };
         Ok(number)
     }
@@ -1420,52 +1194,29 @@ impl Book {
         };
         let mut data = self.get_metadata(&mut f)?;
         if !title.is_empty() {
-            data = data.insert_bool(format!("has_{}_title", header_type), true);
+            data.insert(format!("has_{header_type}_title"), true.into());
         }
         let number = self.get_header_number(header, n)?;
         let header_name = self
             .options
-            .get_str(&format!("rendering.{}", header_type))
+            .get_str(&format!("rendering.{header_type}"))
             .map(|s| s.to_owned())
             .unwrap_or_else(|_| lang::get_str(self.options.get_str("lang").unwrap(), header_type));
 
-        data = data
-            .insert_str(format!("{}_title", header_type), title.clone())
-            .insert_str(header_type, header_name.clone())
-            .insert_str("number", number.clone());
-        let data = data.build();
-        let mut res: Vec<u8> = vec![];
+        data.insert(format!("{header_type}_title"), title.clone().into());
+        data.insert(header_type.into(), header_name.clone().into());
+        data.insert("number".into(), number.clone().into());
 
-        let opt_template = match header {
-            Header::Part => &self.part_template,
-            Header::Chapter => &self.chapter_template,
-        };
-
-        if let Some(ref template) = *opt_template {
-            template.render_data(&mut res, &data)?;
-        } else {
-            let template = compile_str(
-                self.options
-                    .get_str(&format!("rendering.{}.template", header_type))
-                    .unwrap(),
-                &self.source,
-                &format!("rendering.{}.template", header_type),
-            )?;
-            template.render_data(&mut res, &data)?;
-        }
-
-        match String::from_utf8(res) {
-            Err(_) => panic!(
-                "{}",
-                lformat!("header generated by mustache was not valid utf-8")
-            ),
-            Ok(res) => Ok(HeaderData {
-                text: res,
-                number,
-                header: header_name,
-                title,
-            }),
-        }
+        let res = self.registry.get_template(&format!("rendering.{header_type}.template"))
+            .expect(&format!("Error accessing template rendering.{header_type}.template"))
+            .render(&data)
+            .to_string()?;
+        Ok(HeaderData {
+            text: res,
+            number,
+            header: header_name,
+            title,
+        })
     }
 
     /// Returns the string corresponding to a number, title, and the numbering template for chapter
@@ -1486,26 +1237,24 @@ impl Book {
         self.get_header(Header::Part, n, title, f)
     }
 
-    /// Returns a `MapBuilder` (used by `Mustache` for templating), to be used (and completed)
+    /// Returns a `Map of Key/Value` (used by `Upon` for templating), to be used (and completed)
     /// by renderers. It fills it with the metadata options.
     ///
     /// It also uses the lang/xx.yaml file corresponding to the language and fills
     /// `loc_xxx` fiels with it that corresponds to translated versions.
     ///
     /// This method treats the metadata as Markdown and thus calls `f` to render it.
+    /// This is why we can’t really cache this as it will depend on the renderer. 
     #[doc(hidden)]
-    pub fn get_metadata<F>(&self, mut f: F) -> Result<MapBuilder>
+    pub fn get_metadata<F>(&self, mut f: F) -> Result<BTreeMap<String, upon::Value>>
     where
         F: FnMut(&str) -> Result<String>,
     {
-        let mut mapbuilder = MapBuilder::new();
-        mapbuilder = mapbuilder.insert_str("crowbook_version", env!("CARGO_PKG_VERSION"));
-        mapbuilder = mapbuilder.insert_bool(
-            format!("lang_{}", self.options.get_str("lang").unwrap()),
-            true,
-        );
+        let mut m: BTreeMap<String, upon::Value> = BTreeMap::new();
+        m.insert("crowbook_version".into(), env!("CARGO_PKG_VERSION").into());
+        m.insert(format!("lang_{}", self.options.get_str("lang").unwrap()), true.into());
 
-        // Add metadata to mapbuilder
+        // Add metadata to map
         for key in self.options.get_metadata() {
             if let Ok(s) = self.options.get_str(key) {
                 let key = key.replace('.', "_");
@@ -1519,20 +1268,21 @@ impl Book {
                 match content {
                     Ok(content) => {
                         if !content.is_empty() {
-                            mapbuilder = mapbuilder.insert_str(format!("{}_raw", key), raw);
-                            mapbuilder = mapbuilder.insert_str(key.clone(), content);
+                            m.insert(format!("{key}_raw"), raw.into());
+                            m.insert(key.clone(), content.into());
 
-                            mapbuilder = mapbuilder.insert_bool(format!("has_{}", key), true);
+                            m.insert(format!("has_{key}"), true.into());
                         } else {
-                            mapbuilder = mapbuilder.insert_bool(format!("has_{}", key), false);
+                            m.insert(format!("{key}_raw"), "".into());
+                            m.insert(key.clone(), "".into());
+                            m.insert(format!("has_{key}"), false.into());
                         }
                     }
                     Err(err) => {
                         return Err(Error::render(
                             &self.source,
-                            lformat!(
-                                "could not render `{key}` for \
-                                                           metadata:\n{error}",
+                            t!(
+                                "error.render_key",
                                 key = &key,
                                 error = err
                             ),
@@ -1540,7 +1290,8 @@ impl Book {
                     }
                 }
             } else {
-                mapbuilder = mapbuilder.insert_bool(format!("has_{}", key), false);
+                m.insert(key.clone(), "".into());
+                m.insert(format!("has_{key}"), false.into());
             }
         }
 
@@ -1549,10 +1300,30 @@ impl Book {
         for (key, value) in hash {
             let key = format!("loc_{}", key.as_str().unwrap());
             let value = value.as_str().unwrap();
-            mapbuilder = mapbuilder.insert_str(key, value);
+            m.insert(key, value.into());
         }
-        Ok(mapbuilder)
+        Ok(m)
     }
+
+    /// Calls upon::engine::compile, does NOT registre the complete 
+    pub fn compile_str<'s, O>(&self, template: &'s str, source: O, template_name: &str) -> Result<upon::Template<'_, 's>>
+    where
+        O: Into<Source>,
+    {
+        let result = self.registry.compile(template);
+        match result {
+            Ok(result) => Ok(result),
+            Err(err) => Err(Error::template(
+                source,
+                t!(
+                    "error.compile_template",
+                    template = template_name,
+                    error = format!("{:#}", err)
+                ),
+            )),
+        }
+    }
+
 
     /// Remove YAML blocks from a string and try to parse them to set options
     ///
@@ -1568,9 +1339,7 @@ impl Book {
             Ok(docs) => {
                 // Use this yaml block to set options only if 1) it is valid
                 // 2) the option is activated
-                if docs.len() >= 1
-                    && docs[0].as_hash().is_some()
-                {
+                if !docs.is_empty() && docs[0].as_hash().is_some() {
                     let hash = docs[0].as_hash().unwrap();
                     for (key, value) in hash {
                         match self
@@ -1582,67 +1351,57 @@ impl Book {
                                 if let Some(old_value) = opt {
                                     debug!(
                                         "{}",
-                                        lformat!(
-                                            "Inline YAML block \
-                                            replaced {:?} \
-                                            previously set to \
-                                            {:?} to {:?}",
-                                            key,
-                                            old_value,
-                                            value
+                                        t!("debug.yaml_replace",
+                                           key = format!("{:?}", key),
+                                           old_val = format!("{:?}", old_value),
+                                           new_val = format!("{:?}", value)
                                         )
                                     );
                                 } else {
                                     debug!(
                                         "{}",
-                                        lformat!(
-                                            "Inline YAML block \
-                                            set {:?} to {:?}",
-                                            key,
-                                            value
+                                        t!("debug.yaml_set",
+                                           key = format!("{:?}", key),
+                                           value = format!("{:?}", value)
                                         )
                                     );
                                 }
-                            },
+                            }
                             Err(e) => {
-                                error!("{}", lformat!("Inline YAML block could \
-                                                        not set {:?} to {:?}: {}",
-                                                        key,
-                                                        value,
-                                                        e))
+                                error!(
+                                    "{}",
+                                    t!(
+                                        "error.yaml_set",
+                                        key = format!("{:?}", key,),
+                                        value = format!("{:?}", value),
+                                        err = e
+                                    )
+                                )
                             }
                         }
                     }
-                
+
                     self.update_cleaner();
-                    self.init_checker();
                 } else {
                     debug!(
                         "{}",
-                        lformat!(
-                            "Ignoring YAML \
-                            block:
-                            \n{block}",
+                        t!(
+                            "debug.yaml_ignore",
                             block = &yaml_block
                         )
                     );
                 }
-            },
+            }
             Err(err) => {
                 error!(
                     "{}",
-                    lformat!(
-                        "Found something that looked like a \
-                            YAML block:\n{block}",
+                    t!("debug.found_yaml_block",
                         block = &yaml_block
                     )
                 );
                 error!(
                     "{}",
-                    lformat!(
-                        "... but it didn't parse correctly as \
-                        YAML('{error}'), so treating it like \
-                        Markdown.",
+                    t!("debug.found_yaml_block2",
                         error = err
                     )
                 );
@@ -1677,28 +1436,9 @@ impl Book {
     }
 }
 
-impl std::default::Default for Book {
+impl std::default::Default for Book<'_> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// Calls mustache::compile_str but catches panics and returns a result
-pub fn compile_str<O>(template: &str, source: O, template_name: &str) -> Result<mustache::Template>
-where
-    O: Into<Source>,
-{
-    let input: String = template.to_owned();
-    let result = mustache::compile_str(&input);
-    match result {
-        Ok(result) => Ok(result),
-        Err(err) => Err(Error::template(
-            source,
-            lformat!(
-                "could not compile '{template}': {error}",
-                template = template_name,
-                error = err
-            ),
-        )),
-    }
-}

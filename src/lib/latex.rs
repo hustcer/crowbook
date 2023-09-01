@@ -15,7 +15,7 @@
 // You should have received ba copy of the GNU Lesser General Public License
 // along with Crowbook.  If not, see <http://www.gnu.org/licenses/>.
 
-use crate::book::{compile_str, Book};
+use crate::book::Book;
 use crate::book_renderer::BookRenderer;
 use crate::error::{Error, Result, Source};
 use crate::number::Number;
@@ -36,10 +36,11 @@ use std::fs::File;
 use std::io;
 use std::io::Read;
 use std::iter::Iterator;
+use rust_i18n::t;
 
 /// LaTeX renderer
 pub struct LatexRenderer<'a> {
-    book: &'a Book,
+    book: &'a Book<'a>,
     current_chapter: Number,
     handler: ResourceHandler,
     source: Source,
@@ -95,20 +96,20 @@ impl<'a> LatexRenderer<'a> {
     /// Render pdf to a file
     pub fn render_pdf(&mut self, to: &mut dyn io::Write) -> Result<String> {
         let content = self.render_book()?;
-        debug!("{}", lformat!("Attempting to run LaTeX on generated file"));
+        debug!("{}", t!("latex.attempting"));
         let mut zipper = Zipper::new(&self.book.options.get_path("crowbook.temp_dir").unwrap())?;
         zipper.write("result.tex", content.as_bytes(), false)?;
 
         // write image files
         for (source, dest) in self.handler.images_mapping() {
             let mut f = fs::canonicalize(source).and_then(File::open).map_err(|_| {
-                Error::file_not_found(&self.source, lformat!("image"), source.to_owned())
+                Error::file_not_found(&self.source, t!("format.image"), source.to_owned())
             })?;
             let mut content = vec![];
             f.read_to_end(&mut content).map_err(|e| {
                 Error::render(
                     &self.source,
-                    lformat!("error while reading image file: {error}", error = e),
+                    t!("latex.image_error", error = e),
                 )
             })?;
             zipper.write(dest, &content, true)?;
@@ -129,9 +130,8 @@ impl<'a> LatexRenderer<'a> {
         let numbering = self.book.options.get_i32("rendering.num_depth").unwrap() - 1;
         write!(
             content,
-            "\\setcounter{{tocdepth}}{{{}}}
-\\setcounter{{secnumdepth}}{{{}}}\n",
-            numbering, numbering
+            "\\setcounter{{tocdepth}}{{{numbering}}}
+\\setcounter{{secnumdepth}}{{{numbering}}}\n",
         )?;
 
         if self.book.options.get_bool("rendering.inline_toc").unwrap() {
@@ -140,7 +140,7 @@ impl<'a> LatexRenderer<'a> {
 
         for (i, chapter) in self.book.chapters.iter().enumerate() {
             self.handler
-                .add_link(chapter.filename.as_str(), format!("chapter-{}", i));
+                .add_link(chapter.filename.as_str(), format!("chapter-{i}"));
         }
 
         for (i, chapter) in self.book.chapters.iter().enumerate() {
@@ -153,7 +153,7 @@ impl<'a> LatexRenderer<'a> {
                 content.push_str(&self.render_token(&v[0])?);
                 offset = 1;
             }
-            writeln!(content, "\\label{{chapter-{}}}", i)?;
+            writeln!(content, "\\label{{chapter-{i}}}")?;
             content.push_str(&self.render_vec(&v[offset..])?);
         }
         self.source = Source::empty();
@@ -201,106 +201,95 @@ impl<'a> LatexRenderer<'a> {
             _ => {
                 warn!(
                     "{}",
-                    lformat!(
-                        "LaTeX: can't find a tex equivalent for lang '{lang}', \
-                                      fallbacking on english",
-                        lang = self.book.options.get_str("lang").unwrap()
+                    t!("latex.lang_error",
+                       lang = self.book.options.get_str("lang").unwrap()
                     )
                 );
                 "english"
             }
         });
 
-        let template = compile_str(
-            self.book.get_template("tex.template")?.as_ref(),
-            &self.book.source,
-            "tex.template",
-        )?;
+        let template_src = self.book.get_template("tex.template")?;
+
+        // We have to use a different template engine because we need different syntax
+        let syntax = upon::Syntax::builder()
+            .expr("<<", ">>")
+            .block("<#", "#>")
+            .comment("<%", "%>")
+            .build(); 
+        let mut engine = upon::Engine::with_syntax(syntax);
+        engine.add_template("tex.template", template_src)?;
+        let template = engine.get_template("tex.template").unwrap();
         let mut data = self
             .book
-            .get_metadata(|s| self.render_vec(&Parser::new().parse_inline(s)?))?
-            .insert_str("content", content)
-            .insert_str("class", self.book.options.get_str("tex.class").unwrap())
-            .insert_bool(
-                "tex_title",
-                self.book.options.get_bool("tex.title").unwrap(),
-            )
-            .insert_str(
-                "papersize",
-                self.book.options.get_str("tex.paper.size").unwrap(),
-            )
-            .insert_bool(
-                "stdpage",
-                self.book.options.get_bool("tex.stdpage").unwrap(),
-            )
-            .insert_bool("use_url", self.book.features.url)
-            .insert_bool("use_taskitem", self.book.features.taskitem)
-            .insert_bool("use_tables", self.book.features.table)
-            .insert_bool("use_codeblocks", self.book.features.codeblock)
-            .insert_bool("use_images", self.book.features.image)
-            .insert_bool("use_strikethrough", self.book.features.strikethrough)
-            .insert_str("tex_lang", tex_lang);
-        if let Ok(tex_tmpl_add) = self.book.options.get_str("tex.template.add") {
-            data = data.insert_str("additional_code", tex_tmpl_add);
-        }
+            .get_metadata(|s| self.render_vec(&Parser::new().parse_inline(s)?))?;
+        data.insert("content".into(), content.into());
+        data.insert("class".into(), self.book.options.get_str("tex.class").unwrap().into());
+        data.insert("tex_title".into(), self.book.options.get_bool("tex.title").unwrap().into());
+        data.insert("papersize".into(), self.book.options.get_str("tex.paper.size").unwrap().into());
+        data.insert("stdpage".into(), self.book.options.get_bool("tex.stdpage").unwrap().into());
+        data.insert("use_url".into(), self.book.features.url.into());
+        data.insert("use_taskitem".into(), self.book.features.taskitem.into());
+        data.insert("use_tables".into(), self.book.features.table.into());
+        data.insert("use_codeblocks".into(), self.book.features.codeblock.into());
+        data.insert("use_images".into(), self.book.features.image.into());
+        data.insert("use_strikethrough".into(), self.book.features.strikethrough.into());
+        data.insert("tex_lang".into(), tex_lang.into());
+        let tex_tmpl_add = self.book.options.get_str("tex.template.add").unwrap_or("".into());
+        data.insert("additional_code".into(), tex_tmpl_add.into());
+
         if let Ok(tex_font_size) = self.book.options.get_i32("tex.font.size") {
-            data = data
-                .insert_bool("has_tex_size", true)
-                .insert_str("tex_size", format!("{}", tex_font_size));
+            data.insert("has_tex_size".into(), true.into());
+            data.insert("tex_size".into(), format!("{tex_font_size}").into());
+        } else {
+            data.insert("has_tex_size".into(), false.into());
         }
 
         // If class isn't book, set open_any to true, so margins are symetric.
         let mut book = false;
         if self.book.options.get_str("tex.class").unwrap() == "book" {
-            data = data.insert_bool("book", true);
             book = true;
         }
-        data = data
-            .insert_str(
-                "margin_left",
+        data.insert("book".into(), book.into());
+        data.insert(
+                "margin_left".into(),
                 self.book
                     .options
                     .get_str("tex.margin.left")
-                    .unwrap_or(if book { "2.5cm" } else { "2cm" }),
-            )
-            .insert_str(
-                "margin_right",
+                    .unwrap_or(if book { "2.5cm" } else { "2cm" }).into(),
+        );
+        data.insert(
+                "margin_right".into(),
                 self.book
                     .options
                     .get_str("tex.margin.right")
-                    .unwrap_or(if book { "1.5cm" } else { "2cm" }),
-            )
-            .insert_str(
-                "margin_bottom",
-                self.book.options.get_str("tex.margin.bottom").unwrap(),
-            )
-            .insert_str(
-                "margin_top",
-                self.book.options.get_str("tex.margin.top").unwrap(),
-            );
+                    .unwrap_or(if book { "1.5cm" } else { "2cm" }).into(),
+        );
+        data.insert(
+                "margin_bottom".into(),
+                self.book.options.get_str("tex.margin.bottom").unwrap().into(),
+        );
+        data.insert(
+                "margin_top".into(),
+                self.book.options.get_str("tex.margin.top").unwrap().into(),
+        );
 
-        if let Ok(chapter_name) = self.book.options.get_str("rendering.chapter") {
-            data = data.insert_str("chapter_name", chapter_name);
-        }
-        if let Ok(part_name) = self.book.options.get_str("rendering.part") {
-            data = data.insert_str("part_name", part_name);
-        }
-        if self.book.options.get_bool("rendering.initials") == Ok(true) {
-            data = data.insert_bool("initials", true);
-        }
+        let chapter_name = self.book.options.get_str("rendering.chapter").unwrap_or("".into());
+        data.insert("chapter_name".into(), chapter_name.into());
+        
+        let part_name = self.book.options.get_str("rendering.part").unwrap_or("".into());
+        data.insert("part_name".into(), part_name.into());
+        data.insert("initials".into(), self.book.options.get_bool("rendering.initials").unwrap().into());
         // Insert xelatex if tex.command is set to xelatex or tectonic
         if (self.book.options.get_str("tex.command") == Ok("xelatex"))
             | (self.book.options.get_str("tex.command") == Ok("tectonic"))
         {
-            data = data.insert_bool("xelatex", true);
+            data.insert("xelatex".into(), true.into());
+        } else 
+        { 
+            data.insert("xelatex".into(), false.into());
         }
-        let data = data.build();
-        let mut res: Vec<u8> = vec![];
-        template.render_data(&mut res, &data)?;
-        match String::from_utf8(res) {
-            Err(_) => panic!("{}", lformat!("generated LaTeX was not valid utf-8")),
-            Ok(res) => Ok(res),
-        }
+        Ok(template.render(&data).to_string()?)
     }
 }
 
@@ -324,19 +313,12 @@ impl<'a> Renderer for LatexRenderer<'a> {
                         let initial = chars.next().ok_or_else(|| {
                             Error::parser(
                                 &self.book.source,
-                                lformat!(
-                                    "empty str token, could not find \
-                                                              initial"
-                                ),
+                                t!("error.initial"),
                             )
                         })?;
                         let mut first_word = String::new();
-                        loop {
-                            let c = if let Some(next_char) = chars.peek() {
-                                *next_char
-                            } else {
-                                break;
-                            };
+                        while let Some(next_char) = chars.peek() {
+                            let c = *next_char;
                             if !c.is_whitespace() {
                                 first_word.push(c);
                                 chars.next();
@@ -348,12 +330,9 @@ impl<'a> Renderer for LatexRenderer<'a> {
                         let rest = chars.collect::<String>();
 
                         if initial.is_alphanumeric() {
-                            Ok(format!(
-                                "\\lettrine{{{}}}{{{}}}{}",
-                                initial, first_word, rest
-                            ))
+                            Ok(format!("\\lettrine{{{initial}}}{{{first_word}}}{rest}"))
                         } else {
-                            Ok(format!("{}{}{}", initial, first_word, rest))
+                            Ok(format!("{initial}{first_word}{rest}"))
                         }
                     } else {
                         Ok(content.into_owned())
@@ -452,15 +431,13 @@ impl<'a> Renderer for LatexRenderer<'a> {
                     format!(
                         "\\begin{{spverbatim}}
 {code}
-\\end{{spverbatim}}",
-                        code = code
+\\end{{spverbatim}}"
                     )
                 };
                 res = format!(
                     "\\begin{{mdcodeblock}}
-{}
-\\end{{mdcodeblock}}",
-                    res
+{res}
+\\end{{mdcodeblock}}"
                 );
                 Ok(res)
             }
@@ -497,18 +474,13 @@ impl<'a> Renderer for LatexRenderer<'a> {
                         _ => {
                             return Err(Error::render(
                                 &self.source,
-                                lformat!(
-                                    "found {n} indented ordered lists, LaTeX only allows for 4",
+                                t!("latex.lists",
                                     n = self.enum_level
                                 ),
                             ))
                         }
                     };
-                    format!(
-                        "\\setcounter{{{counter}}}{{{n}}}\n",
-                        counter = counter,
-                        n = n - 1
-                    )
+                    format!("\\setcounter{{{counter}}}{{{n}}}\n", n = n - 1)
                 };
                 let result = format!(
                     "\\begin{{enumerate}}
@@ -526,14 +498,13 @@ impl<'a> Renderer for LatexRenderer<'a> {
 
                 if self.hyperref && self.handler.contains_link(url) {
                     Ok(format!(
-                        "\\hyperref[{}]{{{}}}",
+                        "\\hyperref[{}]{{{content}}}",
                         escape::tex(self.handler.get_link(url)),
-                        content
                     ))
                 } else {
                     let url = escape::tex(url.as_str());
                     if content == url {
-                        Ok(format!("\\url{{{}}}", content))
+                        Ok(format!("\\url{{{content}}}"))
                     } else if self
                         .book
                         .options
@@ -541,24 +512,21 @@ impl<'a> Renderer for LatexRenderer<'a> {
                         .unwrap()
                     {
                         Ok(format!(
-                            "\\href{{{}}}{{{}}}\\protect\\footnote{{\\url{{{}}}}}",
-                            url, content, url
+                            "\\href{{{url}}}{{{content}}}\\protect\\footnote{{\\url{{{url}}}}}"
                         ))
                     } else {
-                        Ok(format!("\\href{{{}}}{{{}}}", url, content))
+                        Ok(format!("\\href{{{url}}}{{{content}}}"))
                     }
                 }
             }
             Token::StandaloneImage(ref url, _, _) => {
                 if ResourceHandler::is_local(url) {
                     let img = self.handler.map_image(&self.source, url.as_str())?;
-                    Ok(format!("\\mdstandaloneimage{{{}}}\n", img))
+                    Ok(format!("\\mdstandaloneimage{{{img}}}\n"))
                 } else {
                     debug!(
                         "{}",
-                        lformat!(
-                            "LaTeX ({source}): image '{url}' doesn't seem to be \
-                                           local; ignoring it.",
+                        t!("latex.remote_image",
                             source = self.source,
                             url = url
                         )
@@ -575,9 +543,7 @@ impl<'a> Renderer for LatexRenderer<'a> {
                 } else {
                     debug!(
                         "{}",
-                        lformat!(
-                            "LaTeX ({source}): image '{url}' doesn't seem to be \
-                                           local; ignoring it.",
+                        t!("latex.remote_image",
                             source = self.source,
                             url = url
                         )
@@ -585,7 +551,7 @@ impl<'a> Renderer for LatexRenderer<'a> {
                     Ok(String::new())
                 }
             }
-            Token::FootnoteReference(ref reference) => Ok(format!("\\footnotemark[{}]", reference)),
+            Token::FootnoteReference(ref reference) => Ok(format!("\\footnotemark[{reference}]")),
             Token::FootnoteDefinition(ref reference, ref v) => Ok(format!(
                 "\\footnotetext[{}]{{{}}}",
                 reference,
@@ -625,13 +591,12 @@ impl<'a> Renderer for LatexRenderer<'a> {
                 if self.proofread {
                     match *annotation {
                         Data::GrammarError(ref s) => Ok(format!(
-                            "\\underline{{{}}}\\protect\\footnote{{{}}}",
-                            content,
+                            "\\underline{{{content}}}\\protect\\footnote{{{}}}",
                             escape::tex(s.as_str())
                         )),
                         Data::Repetition(ref colour) => {
                             if !self.escape && colour == "red" {
-                                Ok(format!("\\underline{{{}}}", content))
+                                Ok(format!("\\underline{{{content}}}"))
                             } else {
                                 Ok(content)
                             }
@@ -652,7 +617,7 @@ pub struct ProofPdf;
 
 impl BookRenderer for Latex {
     fn auto_path(&self, book_name: &str) -> Result<String> {
-        Ok(format!("{}.tex", book_name))
+        Ok(format!("{book_name}.tex"))
     }
 
     fn render(&self, book: &Book, to: &mut dyn io::Write) -> Result<()> {
@@ -661,7 +626,7 @@ impl BookRenderer for Latex {
         to.write_all(result.as_bytes()).map_err(|e| {
             Error::render(
                 &book.source,
-                lformat!("problem when writing LaTeX: {error}", error = e),
+                t!("latex.write_error", error = e),
             )
         })?;
         Ok(())
@@ -670,7 +635,7 @@ impl BookRenderer for Latex {
 
 impl BookRenderer for ProofLatex {
     fn auto_path(&self, book_name: &str) -> Result<String> {
-        Ok(format!("{}.proof.tex", book_name))
+        Ok(format!("{book_name}.proof.tex"))
     }
 
     fn render(&self, book: &Book, to: &mut dyn io::Write) -> Result<()> {
@@ -679,7 +644,7 @@ impl BookRenderer for ProofLatex {
         to.write_all(result.as_bytes()).map_err(|e| {
             Error::render(
                 &book.source,
-                lformat!("problem when writing LaTeX: {error}", error = e),
+                t!("latex.write_error", error = e),
             )
         })?;
         Ok(())
@@ -688,7 +653,7 @@ impl BookRenderer for ProofLatex {
 
 impl BookRenderer for Pdf {
     fn auto_path(&self, book_name: &str) -> Result<String> {
-        Ok(format!("{}.pdf", book_name))
+        Ok(format!("{book_name}.pdf"))
     }
 
     fn render(&self, book: &Book, to: &mut dyn io::Write) -> Result<()> {
@@ -699,7 +664,7 @@ impl BookRenderer for Pdf {
 
 impl BookRenderer for ProofPdf {
     fn auto_path(&self, book_name: &str) -> Result<String> {
-        Ok(format!("{}.proof.pdf", book_name))
+        Ok(format!("{book_name}.proof.pdf"))
     }
 
     fn render(&self, book: &Book, to: &mut dyn io::Write) -> Result<()> {

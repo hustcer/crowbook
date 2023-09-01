@@ -1,5 +1,6 @@
 use crate::error::{Error, Result, Source};
 use crate::token::Token;
+use crate::misc;
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -7,8 +8,8 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use rustc_serialize::base64::{self, ToBase64};
 use walkdir::WalkDir;
+use rust_i18n::t;
 
 /// Resource Handler.
 ///
@@ -67,10 +68,8 @@ impl ResourceHandler {
         if !Self::is_local(file.as_ref()) {
             warn!(
                 "{}",
-                lformat!(
-                    "Resources: book includes non-local image {file}, which might \
-                                  cause problem for proper inclusion.",
-                    file = file
+                t!("resources.non_local",
+                   file = file
                 )
             );
             return Ok(file);
@@ -80,8 +79,8 @@ impl ResourceHandler {
         if fs::metadata(file.as_ref()).is_err() {
             return Err(Error::file_not_found(
                 source,
-                lformat!("image"),
-                format!("{}", file),
+                t!("format.image"),
+                format!("{file}"),
             ));
         }
 
@@ -107,9 +106,7 @@ impl ResourceHandler {
             } else {
                 warn!(
                     "{}",
-                    lformat!(
-                        "Resources: book includes image {file} which doesn't have \
-                                      an extension",
+                    t!("resources.no_ext",
                         file = file
                     )
                 );
@@ -121,8 +118,8 @@ impl ResourceHandler {
                 Err(_) => {
                     return Err(Error::file_not_found(
                         source,
-                        lformat!("image"),
-                        format!("{}", file),
+                        t!("format.image"),
+                        format!("{file}"),
                     ));
                 }
             };
@@ -130,23 +127,22 @@ impl ResourceHandler {
             if f.read_to_end(&mut content).is_err() {
                 error!(
                     "{}",
-                    lformat!("Resources: could not read file {file}", file = file)
+                    t!("resources.read_error", file = file)
                 );
                 return Ok(file);
             }
-            let base64 = content.to_base64(base64::STANDARD);
+            let base64 = misc::u8_to_base64(&content);
             match mime_guess::from_path(file.as_ref()).first() {
                 None => {
                     error!(
                         "{}",
-                        lformat!(
-                            "Resources: could not guess mime type of file {file}",
+                        t!("resources.guess",
                             file = file
                         )
                     );
                     return Ok(file);
                 }
-                Some(s) => format!("data:{};base64,{}", s, base64),
+                Some(s) => format!("data:{s};base64,{base64}"),
             }
         };
 
@@ -171,16 +167,15 @@ impl ResourceHandler {
             link
         } else {
             // Try to get a link by changing the extension
-            let new_from = format!("{}", Path::new(from).with_extension("md").display());
+            let new_from = format!("{}", Path::new(from).with_extension("md").display()).replace("\\", "/");
             if let Some(link) = self.links.get(&new_from) {
                 link
             } else {
                 warn!(
                     "{}",
-                    lformat!(
-                        "Resources: could not find an in-book match for link \
-                                      {file}",
-                        file = from
+                    t!("resources.no_match",
+                        file = from,
+                        new_from = new_from
                     )
                 );
                 from
@@ -193,8 +188,8 @@ impl ResourceHandler {
         if self.links.contains_key(from) {
             true
         } else {
-            // Try to get a link by changing the extension
-            let new_from = format!("{}", Path::new(from).with_extension("md").display());
+            // Try to get a link by changing the extension and rewriting backlashes
+            let new_from = format!("{}", Path::new(from).with_extension("md").display()).replace("\\", "/");
             self.links.contains_key(&new_from)
         }
     }
@@ -254,14 +249,13 @@ pub fn get_files(list: &[String], base: &str) -> Result<Vec<String>> {
     let mut out: Vec<String> = vec![];
     let base = Path::new(base);
     for path in list {
-        let abs_path = base.join(&path);
+        let abs_path = base.join(path);
         let res = fs::metadata(&abs_path);
         match res {
             Err(err) => {
                 return Err(Error::render(
                     Source::empty(),
-                    lformat!(
-                        "error reading file {file}: {error}",
+                    t!("resources.read_file",
                         file = abs_path.display(),
                         error = err
                     ),
@@ -283,9 +277,7 @@ pub fn get_files(list: &[String], base: &str) -> Result<Vec<String>> {
                 } else {
                     return Err(Error::render(
                         Source::empty(),
-                        lformat!(
-                            "error in epub rendering: {path} is \
-                                                       neither a file nor a directory",
+                        t!("resources.no_path",
                             path = &path
                         ),
                     ));

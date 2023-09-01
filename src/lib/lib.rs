@@ -1,4 +1,4 @@
-// Copyright (C) 2016, 2017, 2018 Élisabeth HENRY.
+// Copyright (C) 2016-2023 Élisabeth HENRY.
 //
 // This file is part of Crowbook.
 //
@@ -109,10 +109,6 @@ extern crate log;
 #[macro_use]
 extern crate lazy_static;
 
-#[cfg(feature = "proofread")]
-#[macro_use]
-extern crate serde_derive;
-
 pub use book::Book;
 pub use book_renderer::BookRenderer;
 pub use bookoption::BookOption;
@@ -127,9 +123,8 @@ pub use stats::Stats;
 pub use token::Data;
 pub use token::Token;
 
-#[macro_use]
-#[doc(hidden)]
-mod localize_macros;
+rust_i18n::i18n!("lang/lib", fallback="en");
+
 #[macro_use]
 mod html;
 mod book;
@@ -145,8 +140,6 @@ mod html_single;
 mod lang;
 mod latex;
 mod number;
-#[cfg(feature = "odt")]
-mod odt;
 mod parser;
 mod renderer;
 mod resource_handler;
@@ -173,13 +166,6 @@ mod misc;
 mod templates;
 mod text_view;
 mod zipper;
-
-#[cfg(feature = "proofread")]
-mod grammalecte;
-#[cfg(feature = "proofread")]
-mod grammar_check;
-#[cfg(feature = "proofread")]
-mod repetition_check;
 
 #[cfg(test)]
 mod tests;

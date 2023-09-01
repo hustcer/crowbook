@@ -1,4 +1,4 @@
-// Copyright (C) 2016, 2017, 2018 Élisabeth HENRY.
+// Copyright (C) 2016-2023 Élisabeth HENRY.
 //
 // This file is part of Crowbook.
 //
@@ -17,7 +17,7 @@
 
 use crate::book::Header;
 use crate::book::HeaderData;
-use crate::book::{compile_str, Book};
+use crate::book::Book;
 use crate::error::{Error, Result, Source};
 use crate::lang;
 use crate::number::Number;
@@ -27,17 +27,18 @@ use crate::resource_handler::ResourceHandler;
 use crate::syntax::Syntax;
 use crate::token::Data;
 use crate::token::Token;
+use crate::text_view;
 
 use std::borrow::Cow;
 use std::convert::{AsMut, AsRef};
 use std::fmt::Write;
+use std::collections::BTreeMap;
 
 use crowbook_text_processing::escape;
 use epub_builder::Toc;
 use epub_builder::TocElement;
-use mustache::MapBuilder;
-use mustache::Template;
 use numerals::roman::Roman;
+use rust_i18n::t;
 
 #[derive(Debug, PartialEq, Copy, Clone)]
 /// If/how to highlight code
@@ -62,7 +63,7 @@ pub struct HtmlRenderer<'a> {
     filename: String,
 
     /// Book that must be rendered
-    pub book: &'a Book,
+    pub book: &'a Book<'a>,
 
     /// Proofread or not
     pub proofread: bool,
@@ -108,8 +109,8 @@ pub struct HtmlRenderer<'a> {
 
     syntax: Option<Syntax>,
 
-    part_template_html: Template,
-    chapter_template_html: Template,
+    part_template_html: upon::Template<'a, 'a>,
+    chapter_template_html: upon::Template<'a, 'a>,
 }
 
 impl<'a> HtmlRenderer<'a> {
@@ -128,7 +129,7 @@ impl<'a> HtmlRenderer<'a> {
             value => {
                 error!(
                     "{}",
-                    lformat!("rendering.highlight set to '{}', not a valid value", value)
+                    t!("html.highlight", value = value)
                 );
                 (Highlight::None, None)
             }
@@ -160,12 +161,12 @@ impl<'a> HtmlRenderer<'a> {
             proofread: false,
             syntax,
             highlight,
-            part_template_html: compile_str(
+            part_template_html: book.compile_str(
                 book.options.get_str("html.part.template").unwrap(),
                 Source::empty(),
                 "html.part.template",
             )?,
-            chapter_template_html: compile_str(
+            chapter_template_html: book.compile_str(
                 book.options.get_str("html.chapter.template").unwrap(),
                 Source::empty(),
                 "html.chapter.template",
@@ -221,7 +222,7 @@ impl<'a> HtmlRenderer<'a> {
             this.as_mut().render_side_notes(&mut res);
         }
         if render_end_notes {
-            this.as_mut().render_end_notes(&mut res);
+            this.as_mut().render_end_notes(&mut res, "section", "");
         }
         Ok(res)
     }
@@ -248,7 +249,7 @@ impl<'a> HtmlRenderer<'a> {
         } else if self.current_numbering >= n {
             let numbers = self.get_numbers();
             Ok(HeaderData {
-                text: format!("{} {}", numbers, c_title),
+                text: format!("{numbers} {c_title}"),
                 number: numbers,
                 header: String::new(),
                 title: c_title,
@@ -277,17 +278,15 @@ impl<'a> HtmlRenderer<'a> {
                 };
                 let has_number = !data.header.is_empty();
                 let has_title = !data.title.is_empty();
-                let data = MapBuilder::new()
-                    .insert_bool("has_number", has_number)
-                    .insert_bool("has_title", has_title)
-                    .insert_str("header", data.header)
-                    .insert_str("number", data.number)
-                    .insert_str("link", format!("{}", self.link_number))
-                    .insert_str("title", data.title)
-                    .build();
-                let mut res = vec![];
-                template.render_data(&mut res, &data)?;
-                Ok(String::from_utf8(res)?)
+                let data = upon::value!{
+                    has_number: has_number,
+                    has_title: has_title,
+                    header: data.header,
+                    number: data.number,
+                    title: data.title,
+                    link: format!("{}", self.link_number)
+                };
+                Ok(template.render(&data).to_string()?)
             }
         } else {
             Ok(format!(
@@ -356,9 +355,8 @@ impl<'a> HtmlRenderer<'a> {
             } else {
                 error!(
                     "{}",
-                    lformat!(
-                        "can not use roman numerals with zero or negative chapter numbers ({n})",
-                        n = self.current_chapter[i]
+                    t!("error.roman_numerals",
+                       n = self.current_chapter[i]
                     )
                 );
             }
@@ -373,8 +371,7 @@ impl<'a> HtmlRenderer<'a> {
             for (note_number, footnote) in self.footnotes.drain(..) {
                 write!(
                     res,
-                    "<div class = \"sidenote\">\n{} {}\n</div>\n",
-                    note_number, footnote
+                    "<div class = \"sidenote\">\n{note_number} {footnote}\n</div>\n",
                 )
                 .unwrap();
             }
@@ -382,21 +379,16 @@ impl<'a> HtmlRenderer<'a> {
     }
 
     /// Display end notes, if side_notes option is set to false
+    ///
+    /// * res: string to write to
+    /// * section_tag: should be section for HTML5, id for XHTML
+    /// * option: can be "", useful for EPUB3
     #[doc(hidden)]
-    pub fn render_end_notes(&mut self, res: &mut String) {
+    pub fn render_end_notes(&mut self, res: &mut String, section_tag: &str, option: &str) {
         if !self.footnotes.is_empty() {
-            //             for (note_number, footnote) in self.footnotes.drain(..) {
-            //                 res.push_str(&format!("<div class = \"note\">
-            //  <p>{}</p>
-            // {}
-            // </div>\n",
-            //                                       note_number,
-            //                                       footnote));
-            //             }
-
             write!(
                 res,
-                "<div class = \"notes\">
+                "<{section_tag} class = \"notes\" {option}>
  <h2 class = \"notes\">{}</h2>\n",
                 lang::get_str(self.book.options.get_str("lang").unwrap(), "notes")
             )
@@ -407,18 +399,17 @@ impl<'a> HtmlRenderer<'a> {
                     res,
                     "<tr class = \"notes\">
  <td class = \"note-number\">
-  {}
+  {note_number}
  </td>
  <td class = \"note\">
-  {}
+  {footnote}
   </td>
-</tr>\n",
-                    note_number, footnote
+</tr>\n"
                 )
                 .unwrap();
             }
             res.push_str("</table>\n");
-            res.push_str("</div>\n");
+            res.push_str(&format!("</{section_tag}>\n"));
         }
     }
 
@@ -440,7 +431,7 @@ impl<'a> HtmlRenderer<'a> {
                     match *annotation {
                         Data::GrammarError(ref s) => Ok(format!(
                             "<span title = \"{}\" class = \"grammar-error\">{}</span>",
-                            escape::quotes(s.as_str()),
+                            html_escape::encode_double_quoted_attribute(s.as_str()),
                             content
                         )),
                         Data::Repetition(ref colour) => {
@@ -449,9 +440,7 @@ impl<'a> HtmlRenderer<'a> {
                                     "<span class = \"repetition\" \
                                             style = \"text-decoration-line: underline; \
                                             text-decoration-style: wavy; \
-                                            text-decoration-color: {colour}\">{content}</span>",
-                                    colour = colour,
-                                    content = content
+                                            text-decoration-color: {colour}\">{content}</span>"
                                 ))
                             } else {
                                 Ok(content)
@@ -466,7 +455,9 @@ impl<'a> HtmlRenderer<'a> {
                 let mut content = if this.as_ref().verbatim {
                     Cow::Borrowed(text.as_ref())
                 } else {
-                    escape::html(this.as_ref().book.clean(text.as_str()))
+                    escape::html(this.as_ref()
+                                      .book.clean(text.as_str())
+                    )
                 };
                 if this.as_ref().first_letter {
                     this.as_mut().first_letter = false;
@@ -506,10 +497,7 @@ impl<'a> HtmlRenderer<'a> {
                 let content = this.render_vec(vec)?;
                 this.as_mut().current_par += 1;
                 let par = this.as_ref().current_par;
-                Ok(format!(
-                    "<p id = \"para-{}\"{}>{}</p>\n",
-                    par, class, content
-                ))
+                Ok(format!("<p id = \"para-{par}\"{class}>{content}</p>\n"))
             }
             Token::Header(n, ref vec) => {
                 let data = this.as_mut().render_title(n, vec)?;
@@ -528,11 +516,20 @@ impl<'a> HtmlRenderer<'a> {
                     if !this.as_ref().current_part {
                         this.as_mut()
                             .toc
-                            .add(TocElement::new(url, data.text.clone()).level(n));
+                            .add(TocElement::new(url, data.text.clone())
+                                 .level(n)
+                                 .raw_title(escape::html(text_view::view_as_text(vec)))
+                                            // TODO: should use proper text renderer
+                            );
                     } else {
                         this.as_mut()
                             .toc
-                            .add(TocElement::new(url, data.text.clone()).level(n - 1));
+                            .add(TocElement::new(url, data.text.clone())
+                                 .level(n - 1)
+                                 .raw_title(escape::html(text_view::view_as_text(vec)))
+                                            // TODO: same
+                            );
+                    
                     }
                 }
                 Ok(this.as_mut().render_title_full(n, data)?)
@@ -556,11 +553,10 @@ impl<'a> HtmlRenderer<'a> {
                 let output = if let Some(ref syntax) = this.as_ref().syntax {
                     syntax.to_html(s, language)?
                 } else if language.is_empty() {
-                    format!("<pre><code>{}</code></pre>\n", s)
+                    format!("<pre><code>{s}</code></pre>\n")
                 } else {
                     format!(
-                        "<pre><code class = \"language-{}\">{}</code></pre>\n",
-                        language,
+                        "<pre><code class = \"language-{language}\">{}</code></pre>\n",
                         escape::html(s)
                     )
                 };
@@ -575,7 +571,7 @@ impl<'a> HtmlRenderer<'a> {
                 if n == 1 {
                     String::new()
                 } else {
-                    format!(" start = \"{}\"", n)
+                    format!(" start = \"{n}\"")
                 },
                 this.render_vec(vec)?
             )),
@@ -590,7 +586,7 @@ impl<'a> HtmlRenderer<'a> {
             Token::DescriptionTerm(ref v) => Ok(format!("<dt>{}</dt>\n", this.render_vec(v)?)),
             Token::DescriptionDetails(ref v) => Ok(format!("<dd>{}</dd>\n", this.render_vec(v)?)),
             Token::Link(ref url, ref title, ref vec) => {
-                let url = escape::html(url.as_str());
+                let url = html_escape::encode_double_quoted_attribute(url.as_str());
                 let url = if ResourceHandler::is_local(&url) {
                     Cow::Owned(this.as_ref().handler.get_link(&url).to_owned())
                 } else {
@@ -598,12 +594,11 @@ impl<'a> HtmlRenderer<'a> {
                 };
 
                 Ok(format!(
-                    "<a href = \"{}\"{}>{}</a>",
-                    url,
+                    "<a href = \"{url}\"{}>{}</a>",
                     if title.is_empty() {
                         String::new()
                     } else {
-                        format!(" title = \"{}\"", title)
+                        format!(" title = \"{title}\"")
                     },
                     this.render_vec(vec)?
                 ))
@@ -616,16 +611,14 @@ impl<'a> HtmlRenderer<'a> {
 
                 if token.is_image() {
                     Ok(format!(
-                        "<img src = \"{}\" title = \"{}\" alt = \"{}\" />",
-                        url, title, content
+                        "<img src = \"{url}\" title = \"{title}\" alt = \"{content}\" />",
                     ))
                 } else {
                     Ok(format!(
                         "<div class = \"image\">
-  <img src = \"{}\" title = \"{}\" alt = \
-                                \"{}\" />
+  <img src = \"{url}\" title = \"{title}\" alt = \
+                                \"{content}\" />
 </div>",
-                        url, title, content
                     ))
                 }
             }
@@ -639,25 +632,23 @@ impl<'a> HtmlRenderer<'a> {
             Token::TableRow(ref vec) => Ok(format!("<tr>\n{}</tr>\n", this.render_vec(vec)?)),
             Token::TableCell(ref vec) => {
                 let tag = if this.as_ref().table_head { "th" } else { "td" };
-                Ok(format!("<{}>{}</{}>", tag, this.render_vec(vec)?, tag))
+                Ok(format!("<{tag}>{}</{tag}>", this.render_vec(vec)?))
             }
             Token::TableHead(ref vec) => {
                 this.as_mut().table_head = true;
                 let s = this.render_vec(vec)?;
                 this.as_mut().table_head = false;
-                Ok(format!("<tr>\n{}</tr>\n", s))
+                Ok(format!("<tr>\n{s}</tr>\n"))
             }
             Token::FootnoteReference(ref reference) => Ok(format!(
-                "<a href = \"#note-dest-{}\"><sup id = \
-                            \"note-source-{}\">[{}]</sup></a>",
-                reference, reference, reference
+                "<a href = \"#note-dest-{reference}\"><sup id = \
+                            \"note-source-{reference}\">[{reference}]</sup></a>",
             )),
             Token::FootnoteDefinition(ref reference, ref vec) => {
                 let note_number = format!(
                     "<p class = \"note-number\">
-  <a href = \"#note-source-{}\">[{}]</a>
+  <a href = \"#note-source-{reference}\">[{reference}]</a>
 </p>\n",
-                    reference, reference
                 );
 
                 let inner = format!(
@@ -673,12 +664,12 @@ impl<'a> HtmlRenderer<'a> {
 
     /// Consider the html as a template
     fn templatize(&mut self, s: &str) -> Result<String> {
-        let mapbuilder = self.book.get_metadata(|s| Ok(s.to_owned()))?;
-        let data = mapbuilder.build();
-        let template = compile_str(s, &self.book.source, "")?;
-        let mut res = vec![];
-        template.render_data(&mut res, &data)?;
-        Ok(String::from_utf8_lossy(&res).into_owned())
+        if s.is_empty() {
+            return Ok(String::new());
+        }
+        let data = self.book.get_metadata(|s| Ok(s.to_owned()))?;
+        let template = self.book.compile_str(s, &self.book.source, "")?;
+        Ok(template.render(&data).to_string()?)
     }
 
     /// Renders the toc name
@@ -686,17 +677,14 @@ impl<'a> HtmlRenderer<'a> {
     pub fn get_toc_name(&mut self) -> Result<String> {
         let data = self
             .book
-            .get_metadata(|s| self.render_vec(&Parser::new().parse_inline(s)?))?
-            .build();
+            .get_metadata(|s| self.render_vec(&Parser::new().parse_inline(s)?))?;
         let template = self
             .book
             .options
             .get_str("rendering.inline_toc.name")
             .unwrap();
-        let template = compile_str(template, &self.book.source, "rendering.inline_toc.name")?;
-        let mut res = vec![];
-        template.render_data(&mut res, &data)?;
-        Ok(String::from_utf8_lossy(&res).into_owned())
+        let template = self.book.compile_str(template, &self.book.source, "rendering.inline_toc.name")?;
+        Ok(template.render(&data).to_string()?)
     }
 
     /// Render a section containing schema.org JSON-LD code
@@ -706,21 +694,35 @@ impl<'a> HtmlRenderer<'a> {
 {
     "@context": "http://schema.org/",
     "@type": "Book",
-    "author": "{{{author}}}",
-    "name": "{{{title}}}",
-    {{#has_version}}"version": "{{{version}}}",{{/has_version}}
-    {{#has_subtitle}}"alternateName": "{{{subtitle}}}",{{/has_subtitle}}
-    {{#has_subject}}"keywords": "{{{subject}}}",{{/has_subject}}
-    {{#has_license}}"license": "{{{license}}}",{{/has_license}}
-    {{#has_description}}"about": "{{{description}}}",{{/has_description}}
-    "inLanguage": "{{{lang}}}"
-
-
-
-
+    "author": "{{author}}",
+    "name": "{{title}}",
+    {% if has_version %}"version": "{{version}}",{% endif %}
+    {% if has_subtitle %}"alternateName": "{{subtitle}}",{% endif %}
+    {% if has_subject %}"keywords": "{{subject}}",{% endif %}
+    {% if has_license %}"license": "{{license}}",{% endif %}
+    {% if has_description %}"about": "{{description}}",{% endif %}
+    "inLanguage": "{{lang}}"
 }
 </script>"#;
         self.templatize(json)
+    }
+
+    /// Get metadata useful for many HTML templates.
+    /// This could be cached yes.
+    pub fn get_metadata(&mut self) -> Result<BTreeMap<String, upon::Value>> {
+        // Get base metadata 
+        let mut data = self
+            .book
+            .get_metadata(|s| self.render_vec(&Parser::new().parse_inline(s)?))?;
+
+        // Add stuff used for HTML templates
+        data.insert("json_data".into(), self.get_json_ld()?.into());
+        data.insert("script".into(), self.book.get_template("html.js").unwrap().into());
+        data.insert("highlight_code".into(), (self.highlight == Highlight::Js).into());
+        data.insert("footer".into(), HtmlRenderer::get_footer(self)?.into());
+        data.insert("header".into(), HtmlRenderer::get_header(self)?.into());
+
+        Ok(data)
     }
 
     /// Renders a footer, which can include a "Generated by Crowboook" link
@@ -736,10 +738,8 @@ impl<'a> HtmlRenderer<'a> {
                 Err(err) => {
                     return Err(Error::render(
                         &this.as_ref().book.source,
-                        lformat!(
-                            "rendering 'html.footer' \
-                                                       template:\n{error}",
-                            error = err
+                        t!("html.footer_template_error",
+                           error = err
                         ),
                     ))
                 }
@@ -752,7 +752,7 @@ impl<'a> HtmlRenderer<'a> {
         } else {
             let tokens = Parser::from(this.as_ref().book).parse(&content, None)?;
             let content = this.render_vec(&tokens)?;
-            Ok(format!("<footer id = \"footer\">{}</footer>", content))
+            Ok(format!("<footer id = \"footer\">{content}</footer>"))
         }
     }
 
@@ -773,7 +773,7 @@ impl<'a> HtmlRenderer<'a> {
                 }
                 Err(err) => Err(Error::render(
                     &this.as_ref().book.source,
-                    lformat!("rendering 'html.header' template:\n{error}", error = err),
+                    t!("html.header_template_error", error = err),
                 )),
             }
         } else {
