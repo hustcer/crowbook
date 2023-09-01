@@ -122,9 +122,9 @@ if $os in [$USE_UBUNTU, 'macos-latest'] {
 
 def 'cargo-build-bin' [ options: string ] {
     if ($options | str trim | is-empty) {
-        cargo build --release --all --target $target --features vendored
+        cargo build --release --all --target $target
     } else {
-        cargo build --release --all --target $target --features vendored $options
+        cargo build --release --all --target $target $options
     }
 }
 
