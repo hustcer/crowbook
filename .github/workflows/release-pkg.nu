@@ -55,9 +55,9 @@ if $os in [$USE_UBUNTU, 'macos-latest'] {
 # ----------------------------------------------------------------------------
 if $os in ['windows-latest'] {
     if ($flags | str trim | is-empty) {
-        cargo build --release --all --target $target --features vendored
+        cargo build --release --all --target $target
     } else {
-        cargo build --release --all --target $target --features vendored $flags
+        cargo build --release --all --target $target $flags
     }
 }
 
