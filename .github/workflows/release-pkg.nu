@@ -13,17 +13,17 @@ let flags = $env.TARGET_RUSTFLAGS
 let dist = $'($env.GITHUB_WORKSPACE)/output'
 let version = (open Cargo.toml | get package.version)
 
-$'Debugging info:'
+print $'Debugging info:'
 print { version: $version, bin: $bin, os: $os, target: $target, src: $src, flags: $flags, dist: $dist }; hr-line -b
 
 # $env
 
 let USE_UBUNTU = 'ubuntu-20.04'
 
-$'(char nl)Packaging ($bin) v($version) for ($target) in ($src)...'; hr-line -b
+print $'(char nl)Packaging ($bin) v($version) for ($target) in ($src)...'; hr-line -b
 if not ('Cargo.lock' | path exists) { cargo generate-lockfile }
 
-$'Start building ($bin)...'; hr-line
+print $'Start building ($bin)...'; hr-line
 
 # ----------------------------------------------------------------------------
 # Build for Ubuntu and macOS
@@ -64,18 +64,18 @@ if $os in ['windows-latest'] {
 # ----------------------------------------------------------------------------
 let suffix = if $os == 'windows-latest' { '.exe' }
 let executable = $'target/($target)/release/($bin)*($suffix)'
-$'Current executable file: ($executable)'
+print $'Current executable file: ($executable)'
 
 cd $src; mkdir $dist;
 rm -rf $'target/($target)/release/*.d'
-$'(char nl)All executable files:'; hr-line
+print $'(char nl)All executable files:'; hr-line
 ls -f $executable
 
-$'(char nl)Copying release files...'; hr-line
+print $'(char nl)Copying release files...'; hr-line
 cp -v README.md $'($dist)/README.md'
 [LICENSE.md $executable] | each {|it| cp -rv $it $dist } | flatten
 
-$'(char nl)Check binary release version detail:'; hr-line
+print $'(char nl)Check binary release version detail:'; hr-line
 let ver = if $os == 'windows-latest' {
     (do -i { ./output/crowbook.exe --version }) | str join
 } else {
@@ -88,7 +88,7 @@ if ($ver | str trim | is-empty) {
 # ----------------------------------------------------------------------------
 # Create a release archive and send it to output for the following steps
 # ----------------------------------------------------------------------------
-cd $dist; $'(char nl)Creating release archive...'; hr-line
+cd $dist; print $'(char nl)Creating release archive...'; hr-line
 if $os in [$USE_UBUNTU, 'macos-latest'] {
 
     let files = (ls | get name)
@@ -98,7 +98,7 @@ if $os in [$USE_UBUNTU, 'macos-latest'] {
     mkdir $dest
     $files | each {|it| mv $it $dest } | ignore
 
-    $'(char nl)(ansi g)Archive contents:(ansi reset)'; hr-line; ls $dest
+    print $'(char nl)(ansi g)Archive contents:(ansi reset)'; hr-line; ls $dest
 
     tar -czf $archive $dest
     print $'archive: ---> ($archive)'; ls $archive
@@ -108,7 +108,7 @@ if $os in [$USE_UBUNTU, 'macos-latest'] {
 } else if $os == 'windows-latest' {
 
     let releaseStem = $'($bin)-($version)-($target)'
-    $'(char nl)(ansi g)Archive contents:(ansi reset)'; hr-line; ls
+    print $'(char nl)(ansi g)Archive contents:(ansi reset)'; hr-line; ls
     let archive = $'($dist)/($releaseStem).zip'
     7z a $archive *
     print $'archive: ---> ($archive)';
@@ -127,11 +127,14 @@ def 'cargo-build-bin' [ options: string ] {
 }
 
 # Print a horizontal line marker
-def 'hr-line' [
-    --blank-line(-b): bool
+export def 'hr-line' [
+  width?: int = 90,
+  --color(-c): string = 'g',
+  --blank-line(-b): bool,
+  --with-arrow(-a): bool,
 ] {
-    print $'(ansi g)---------------------------------------------------------------------------->(ansi reset)'
-    if $blank_line { char nl }
+  print $'(ansi $color)('─' * $width)(if $with_arrow {'>'})(ansi reset)'
+  if $blank_line { char nl }
 }
 
 # Get the specified env key's value or ''
