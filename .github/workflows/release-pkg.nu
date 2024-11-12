@@ -18,7 +18,7 @@ print { version: $version, bin: $bin, os: $os, target: $target, src: $src, flags
 
 # $env
 
-let USE_UBUNTU = 'ubuntu-20.04'
+let USE_UBUNTU = 'ubuntu-22.04'
 
 print $'(char nl)Packaging ($bin) v($version) for ($target) in ($src)...'; hr-line -b
 if not ('Cargo.lock' | path exists) { cargo generate-lockfile }
@@ -34,11 +34,11 @@ if $os in [$USE_UBUNTU, 'macos-latest'] {
     }
     if $target == 'aarch64-unknown-linux-gnu' {
         sudo apt-get install gcc-aarch64-linux-gnu -y
-        let-env CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER = 'aarch64-linux-gnu-gcc'
+        $env.CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER = 'aarch64-linux-gnu-gcc'
         cargo-build-bin $flags
     } else if $target == 'armv7-unknown-linux-gnueabihf' {
         sudo apt-get install pkg-config gcc-arm-linux-gnueabihf -y
-        let-env CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER = 'arm-linux-gnueabihf-gcc'
+        $env.CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER = 'arm-linux-gnueabihf-gcc'
         cargo-build-bin $flags
     } else {
         # musl-tools to fix 'Failed to find tool. Is `musl-gcc` installed?'
@@ -126,15 +126,23 @@ def 'cargo-build-bin' [ options: string ] {
     }
 }
 
-# Print a horizontal line marker
-export def 'hr-line' [
-  width?: int = 90,
-  --color(-c): string = 'g',
-  --blank-line(-b): bool,
-  --with-arrow(-a): bool,
+# Create a line by repeating the unit with specified times
+def build-line [
+  times: int,
+  unit: string = '-',
 ] {
-  print $'(ansi $color)('─' * $width)(if $with_arrow {'>'})(ansi reset)'
-  if $blank_line { char nl }
+  0..<$times | reduce -f '' { |i, acc| $unit + $acc }
+}
+
+# Print a horizontal line marker
+export def hr-line [
+  width?: int = 90,
+  --blank-line(-b),
+  --with-arrow(-a),
+  --color(-c): string = 'g',
+] {
+  print $'(ansi $color)(build-line $width)(if $with_arrow {'>'})(ansi reset)'
+  if $blank_line { print -n (char nl) }
 }
 
 # Get the specified env key's value or ''
