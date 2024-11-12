@@ -69,11 +69,11 @@ print $'Current executable file: ($executable)'
 cd $src; mkdir $dist;
 rm -rf $'target/($target)/release/*.d'
 print $'(char nl)All executable files:'; hr-line
-ls -f $executable
+ls -f ($executable | into glob)
 
 print $'(char nl)Copying release files...'; hr-line
 cp -v README.md $'($dist)/README.md'
-[LICENSE.md $executable] | each {|it| cp -rv $it $dist } | flatten
+[LICENSE.md ($executable | into glob)] | each {|it| cp -rv $it $dist } | flatten
 
 print $'(char nl)Check binary release version detail:'; hr-line
 let ver = if $os == 'windows-latest' {
