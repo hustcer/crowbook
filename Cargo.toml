@@ -12,7 +12,7 @@ categories = ["command-line-utilities", "text-processing"]
 license = "LGPL-2.1+"
 publish = true
 autobins = false
-rust-version = "1.58" 
+rust-version = "1.58"
 
 exclude = [
     "docs/*",
@@ -37,6 +37,7 @@ path = "src/bin/main.rs"
 doc = false
 
 [features]
+odt = []
 default = ["binary", "syntect"]
 binary = ["clap", "simplelog", "tempfile", "console", "indicatif", "textwrap"]
 nightly = ["punkt", "hyphenation"]
