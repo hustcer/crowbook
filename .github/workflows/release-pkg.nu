@@ -40,6 +40,12 @@ if $os in [$USE_UBUNTU, 'macos-latest'] {
         sudo apt-get install pkg-config gcc-arm-linux-gnueabihf -y
         $env.CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER = 'arm-linux-gnueabihf-gcc'
         cargo-build-bin $flags
+    } else if $target == 'aarch64-unknown-linux-musl' {
+        aria2c https://musl.cc/aarch64-linux-musl-cross.tgz
+        tar -xf aarch64-linux-musl-cross.tgz -C $env.HOME
+        $env.PATH = ($env.PATH | split row (char esep) | prepend $'($env.HOME)/aarch64-linux-musl-cross/bin')
+        $env.CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER = 'aarch64-linux-musl-gcc'
+        cargo-build-bin $flags
     } else {
         # musl-tools to fix 'Failed to find tool. Is `musl-gcc` installed?'
         # Actually just for x86_64-unknown-linux-musl target
